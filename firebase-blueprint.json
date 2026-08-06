@@ -1,0 +1,163 @@
+{
+  "entities": {
+    "occasion": {
+      "title": "Occasion",
+      "description": "Festival occasion item",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "eventDates": { "type": "string" },
+        "fromDate": { "type": "string" },
+        "toDate": { "type": "string" },
+        "logoUrl": { "type": "string" },
+        "brochureUrl": { "type": "string" },
+        "description": { "type": "string" },
+        "chiefGuestName": { "type": "string" },
+        "chiefGuestPhotoUrl": { "type": "string" },
+        "chiefGuestDescription": { "type": "string" },
+        "convenorName": { "type": "string" },
+        "convenorEmail": { "type": "string" },
+        "capLimit": { "type": "number" },
+        "isOpenToExternal": { "type": "boolean" }
+      },
+      "required": ["id", "title"]
+    },
+    "event": {
+      "title": "Event",
+      "description": "Fresherism 7.0 event item",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "date": { "type": "string" },
+        "timeStart": { "type": "string" },
+        "timeEnd": { "type": "string" },
+        "venue": { "type": "string" },
+        "hostDepartment": { "type": "string" },
+        "coordinatorFacultyId": { "type": "string" },
+        "coordinatorName": { "type": "string" },
+        "coordinatorMobile": { "type": "string" },
+        "coordinatorEmail": { "type": "string" },
+        "studentCoordinatorName": { "type": "string" },
+        "rules": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "brochureUrl": { "type": "string" }
+      },
+      "required": ["id", "title", "date", "venue"]
+    },
+    "student": {
+      "title": "Student",
+      "description": "Registered student user",
+      "type": "object",
+      "properties": {
+        "registerNo": { "type": "string" },
+        "name": { "type": "string" },
+        "mobile": { "type": "string" },
+        "email": { "type": "string" },
+        "school": { "type": "string" },
+        "department": { "type": "string" },
+        "programName": { "type": "string" },
+        "registeredEventIds": { "type": "array" }
+      },
+      "required": ["registerNo", "name", "email"]
+    },
+    "facultyCoordinator": {
+      "title": "FacultyCoordinator",
+      "description": "Faculty coordinator profile",
+      "type": "object",
+      "properties": {
+        "facultyId": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "username": { "type": "string" },
+        "mobile": { "type": "string" },
+        "department": { "type": "string" },
+        "isApproved": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["facultyId", "name", "email", "isApproved"]
+    },
+    "notification": {
+      "title": "Notification",
+      "description": "Broadcast or student alert",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "eventId": { "type": "string" },
+        "eventTitle": { "type": "string" },
+        "title": { "type": "string" },
+        "content": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "senderName": { "type": "string" },
+        "targetRegisterNo": { "type": "string" }
+      },
+      "required": ["id", "title", "content"]
+    },
+    "score": {
+      "title": "Score",
+      "description": "Student event performance score",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "studentRegisterNo": { "type": "string" },
+        "studentName": { "type": "string" },
+        "eventId": { "type": "string" },
+        "eventTitle": { "type": "string" },
+        "registrationPoints": { "type": "number" },
+        "participated": { "type": "boolean" },
+        "participationPoints": { "type": "number" },
+        "eventScore": { "type": "number" },
+        "totalScore": { "type": "number" },
+        "isWinner": { "type": "boolean" },
+        "scoreEntered": { "type": "boolean" }
+      },
+      "required": ["id", "studentRegisterNo", "eventId"]
+    },
+    "message": {
+      "title": "Message",
+      "description": "Message to coordinator",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "coordinatorFacultyId": { "type": "string" },
+        "coordinatorName": { "type": "string" },
+        "eventTitle": { "type": "string" },
+        "message": { "type": "string" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["id", "message"]
+    }
+  },
+  "firestore": {
+    "/occasions/{occasionId}": {
+      "schema": { "$ref": "#/entities/occasion" },
+      "description": "Collection of occasions"
+    },
+    "/events/{eventId}": {
+      "schema": { "$ref": "#/entities/event" },
+      "description": "Collection of events"
+    },
+    "/students/{studentId}": {
+      "schema": { "$ref": "#/entities/student" },
+      "description": "Collection of students"
+    },
+    "/facultyCoordinators/{coordinatorId}": {
+      "schema": { "$ref": "#/entities/facultyCoordinator" },
+      "description": "Collection of faculty coordinators"
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/notification" },
+      "description": "Collection of notifications"
+    },
+    "/scores/{scoreId}": {
+      "schema": { "$ref": "#/entities/score" },
+      "description": "Collection of scores"
+    },
+    "/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/message" },
+      "description": "Collection of messages"
+    }
+  }
+}

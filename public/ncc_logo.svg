@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 520" width="100%" height="100%">
+  <defs>
+    <!-- Gold Gradient for Wreath, Borders, and Ribbon -->
+    <linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FCE881"/>
+      <stop offset="40%" stop-color="#CBA135"/>
+      <stop offset="80%" stop-color="#9C771C"/>
+      <stop offset="100%" stop-color="#E8C35A"/>
+    </linearGradient>
+
+    <!-- Ribbon White Gradient -->
+    <linearGradient id="ribbonGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#F0E8D2"/>
+    </linearGradient>
+
+    <!-- Clip Paths for 3 Shield Stripes -->
+    <clipPath id="shieldClip">
+      <!-- Shield shape -->
+      <path d="M 50 25 C 100 60, 150 20, 200 45 C 250 20, 300 60, 350 25 L 350 280 C 350 360, 260 410, 200 440 C 140 410, 50 360, 50 280 Z" />
+    </clipPath>
+  </defs>
+
+  <!-- SHIELD BACKGROUND WITH THREE STRIPES -->
+  <g clip-path="url(#shieldClip)">
+    <!-- Red Stripe (Left) -->
+    <rect x="0" y="0" width="133.3" height="500" fill="#E31B23" />
+    <!-- Navy Blue Stripe (Middle) -->
+    <rect x="133.3" y="0" width="133.4" height="500" fill="#202A81" />
+    <!-- Sky Blue Stripe (Right) -->
+    <rect x="266.7" y="0" width="133.3" height="500" fill="#00A3E0" />
+  </g>
+
+  <!-- SHIELD OUTLINE (GOLD BORDER) -->
+  <path d="M 50 25 C 100 60, 150 20, 200 45 C 250 20, 300 60, 350 25 L 350 280 C 350 360, 260 410, 200 440 C 140 410, 50 360, 50 280 Z"
+        fill="none" stroke="url(#goldGrad)" stroke-width="7" stroke-linejoin="round" />
+
+  <!-- CENTER LAUREL WREATH (GOLD LEAVES) -->
+  <g fill="url(#goldGrad)" stroke="#7A5A0D" stroke-width="0.5">
+    <!-- Left Wreath Leaves -->
+    <path d="M 120 180 C 100 170 100 150 115 145 C 130 155 130 170 120 180 Z" />
+    <path d="M 110 210 C 90 200 88 180 105 175 C 120 185 120 200 110 210 Z" />
+    <path d="M 108 245 C 88 235 85 215 102 210 C 118 220 118 235 108 245 Z" />
+    <path d="M 112 280 C 92 270 90 250 108 245 C 122 255 122 270 112 280 Z" />
+    <path d="M 125 310 C 105 305 102 285 120 280 C 132 290 132 305 125 310 Z" />
+    <path d="M 145 338 C 128 335 122 315 140 310 C 150 320 148 332 145 338 Z" />
+
+    <!-- Right Wreath Leaves -->
+    <path d="M 280 180 C 300 170 300 150 285 145 C 270 155 270 170 280 180 Z" />
+    <path d="M 290 210 C 310 200 312 180 295 175 C 280 185 280 200 290 210 Z" />
+    <path d="M 292 245 C 312 235 315 215 298 210 C 282 220 282 235 292 245 Z" />
+    <path d="M 288 280 C 308 270 310 250 292 245 C 278 255 278 270 288 280 Z" />
+    <path d="M 275 310 C 295 305 298 285 280 280 C 268 290 268 305 275 310 Z" />
+    <path d="M 255 338 C 272 335 278 315 260 310 C 250 320 252 332 255 338 Z" />
+
+    <!-- Additional Decorative Petal Accents Top & Bottom -->
+    <path d="M 180 145 C 170 128 190 120 200 135 C 210 120 230 128 220 145 C 200 150 200 150 180 145 Z" />
+    <!-- Crossed Stem Bases at Bottom -->
+    <path d="M 165 330 L 225 375 L 215 382 L 155 337 Z" />
+    <path d="M 235 330 L 175 375 L 185 382 L 245 337 Z" />
+  </g>
+
+  <!-- TEXT INSIDE THE SHIELD WREATH -->
+  <!-- Top Hindi Short Form: "रा कै को" -->
+  <text x="200" y="200" text-anchor="middle" font-family="'Times New Roman', 'Noto Sans Devanagari', 'Yatra One', serif" font-weight="900" font-size="28" fill="url(#goldGrad)" stroke="#5B4208" stroke-width="0.6" letter-spacing="2">
+    रा कै को
+  </text>
+
+  <!-- Big Middle Text: "NCC" -->
+  <text x="200" y="255" text-anchor="middle" font-family="'Times New Roman', Georgia, serif" font-weight="900" font-size="52" fill="url(#goldGrad)" stroke="#5B4208" stroke-width="1.2" letter-spacing="3">
+    NCC
+  </text>
+
+  <!-- BOTTOM RIBBON BANNER SCROLL ("एकता और अनुशासन") -->
+  <g id="ribbonBanner">
+    <!-- Ribbon Left Fold Background -->
+    <path d="M 45 425 L 85 410 L 85 460 L 45 440 Z" fill="#B38B21" stroke="#5B4208" stroke-width="1.5" />
+    <path d="M 45 425 L 20 405 L 45 390 L 85 410 Z" fill="#E8C35A" stroke="#5B4208" stroke-width="1" />
+
+    <!-- Ribbon Right Fold Background -->
+    <path d="M 355 425 L 315 410 L 315 460 L 355 440 Z" fill="#B38B21" stroke="#5B4208" stroke-width="1.5" />
+    <path d="M 355 425 L 380 405 L 355 390 L 315 410 Z" fill="#E8C35A" stroke="#5B4208" stroke-width="1" />
+
+    <!-- Main Front Ribbon White Body -->
+    <path d="M 75 420 Q 200 450 325 420 L 325 480 Q 200 510 75 480 Z" fill="url(#ribbonGrad)" stroke="url(#goldGrad)" stroke-width="4" />
+
+    <!-- Ribbon Motto Text in Hindi Devanagari -->
+    <text x="200" y="464" text-anchor="middle" font-family="'Times New Roman', 'Noto Sans Devanagari', 'Yatra One', serif" font-weight="900" font-size="22" fill="#B33900" stroke="#7A2200" stroke-width="0.3" letter-spacing="1.5">
+      एकता और अनुशासन
+    </text>
+  </g>
+</svg>

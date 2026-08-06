@@ -1,0 +1,359 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800;900&family=Syne:wght@700;800;900&family=JetBrains+Mono:wght@500;700;800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Syne", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+  
+  --color-art-bg: #0F011E;
+  --color-art-pink: #FF007A;
+  --color-art-cyan: #00D1FF;
+  --color-art-orange: #FFAC1C;
+  --color-art-mint: #00FFAB;
+  --color-art-purple-dark: #1A032E;
+  --color-art-purple-medium: #2E004F;
+}
+
+/* Global typography & readability enhancements */
+body {
+  background-color: #0F011E;
+  color: #F8FAFC;
+  font-family: "Plus Jakarta Sans", sans-serif;
+  font-weight: 600;
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Ensure bright, bold light forecolor for secondary text in dark mode */
+.text-zinc-500, .text-zinc-400 {
+  color: #E2E8F0;
+  font-weight: 600;
+}
+
+.text-zinc-300, .text-zinc-200 {
+  color: #FFFFFF;
+  font-weight: 600;
+}
+
+.text-slate-400, .text-slate-500 {
+  color: #CBD5E1;
+  font-weight: 600;
+}
+
+/* Prevent ultra-tiny illegible text */
+.text-\[9px\], .text-\[10px\], .text-\[11px\] {
+  font-size: 0.8125rem !important; /* ~13px */
+  font-weight: 700 !important;
+  letter-spacing: 0.02em;
+}
+
+.text-xs {
+  font-size: 0.875rem !important; /* ~14px */
+  font-weight: 600;
+}
+
+.text-sm {
+  font-size: 1rem !important; /* ~16px */
+  font-weight: 600;
+}
+
+/* High visibility inputs and buttons */
+input, select, textarea {
+  color: #FFFFFF;
+  font-weight: 600;
+}
+
+input::placeholder, textarea::placeholder {
+  color: #94A3B8;
+  font-weight: 500;
+}
+
+/* ==========================================================================
+   SUNNY LIGHT THEME OVERRIDES (Vibrant Light Multicolor Theme)
+   - Canvas: Bright, cheerful light multicolor gradient mesh
+   - Card Containers & Panels: Light translucent glass cards (#FFFFFF / #F1F5F9)
+   - Typography inside Light Boxes: Deep Navy/Slate (#0F172A, #334155)
+   - Buttons on Light Components: SOLID DARK BUTTONS (#0F172A dark slate, #C2410C dark orange, #0284C7 deep blue) with CRISP WHITE (#FFFFFF) text
+   ========================================================================== */
+
+.theme-sunny-light,
+.theme-sunny-light body {
+  color: #0F172A !important;
+  background: 
+    radial-gradient(at 0% 0%, rgba(253, 224, 71, 0.4) 0px, transparent 50%),
+    radial-gradient(at 100% 0%, rgba(244, 114, 182, 0.35) 0px, transparent 50%),
+    radial-gradient(at 100% 100%, rgba(56, 189, 248, 0.4) 0px, transparent 50%),
+    radial-gradient(at 0% 100%, rgba(167, 139, 250, 0.35) 0px, transparent 50%),
+    linear-gradient(135deg, #FFF7ED 0%, #FEF3C7 30%, #F0F9FF 65%, #FAE8FF 100%) !important;
+  background-attachment: fixed !important;
+}
+
+/* Light Translucent Glass Cards, Panels, Modals & Containers */
+.theme-sunny-light div[class*="bg-[#1A032E]"],
+.theme-sunny-light div[class*="bg-[#0F011E]"],
+.theme-sunny-light div[class*="bg-[#0F172A]"],
+.theme-sunny-light div[class*="bg-[#140026]"],
+.theme-sunny-light div[class*="bg-[#2A064D]"],
+.theme-sunny-light div[class*="bg-[#2E004F]"],
+.theme-sunny-light div[class*="bg-[#120124]"],
+.theme-sunny-light div[class*="bg-[#0A0016]"],
+.theme-sunny-light div[class*="bg-[#3B075C]"],
+.theme-sunny-light div[class*="bg-[#2A0347]"],
+.theme-sunny-light div[class*="bg-zinc-900"],
+.theme-sunny-light div[class*="bg-zinc-950"],
+.theme-sunny-light div[class*="bg-purple-950"],
+.theme-sunny-light div[class*="bg-slate-900"],
+.theme-sunny-light section[class*="bg-[#"],
+.theme-sunny-light div[class*="bg-gradient-to-"] {
+  background-image: none !important;
+  background-color: rgba(255, 255, 255, 0.88) !important;
+  backdrop-filter: blur(16px) !important;
+  border: 1.5px solid rgba(203, 213, 225, 0.9) !important;
+  box-shadow: 0 10px 30px -5px rgba(15, 23, 42, 0.08), 0 4px 12px rgba(15, 23, 42, 0.03) !important;
+  color: #0F172A !important;
+}
+
+/* MANDATORY DARK TYPOGRAPHY ON ALL LIGHT CONTAINERS (EXCEPT INSIDE BUTTONS) */
+.theme-sunny-light :not(button):not(button *):not(.btn):not(.btn *) > p,
+.theme-sunny-light :not(button):not(button *):not(.btn):not(.btn *) > h1,
+.theme-sunny-light :not(button):not(button *):not(.btn):not(.btn *) > h2,
+.theme-sunny-light :not(button):not(button *):not(.btn):not(.btn *) > h3,
+.theme-sunny-light :not(button):not(button *):not(.btn):not(.btn *) > h4,
+.theme-sunny-light :not(button):not(button *):not(.btn):not(.btn *) > h5,
+.theme-sunny-light :not(button):not(button *):not(.btn):not(.btn *) > h6,
+.theme-sunny-light :not(button):not(button *):not(.btn):not(.btn *) > label {
+  color: #0F172A;
+}
+
+.theme-sunny-light :not(button):not(button *):not(.btn):not(.btn *) .text-white,
+.theme-sunny-light :not(button):not(button *):not(.btn):not(.btn *) .text-slate-100,
+.theme-sunny-light :not(button):not(button *):not(.btn):not(.btn *) .text-slate-200,
+.theme-sunny-light :not(button):not(button *):not(.btn):not(.btn *) .text-slate-300,
+.theme-sunny-light :not(button):not(button *):not(.btn):not(.btn *) .text-zinc-100,
+.theme-sunny-light :not(button):not(button *):not(.btn):not(.btn *) .text-zinc-200,
+.theme-sunny-light :not(button):not(button *):not(.btn):not(.btn *) .text-zinc-300,
+.theme-sunny-light :not(button):not(button *):not(.btn):not(.btn *) .text-purple-100,
+.theme-sunny-light :not(button):not(button *):not(.btn):not(.btn *) .text-purple-200,
+.theme-sunny-light :not(button):not(button *):not(.btn):not(.btn *) .text-purple-300 {
+  color: #0F172A !important;
+}
+
+.theme-sunny-light :not(button):not(button *):not(.btn):not(.btn *) .text-slate-400,
+.theme-sunny-light :not(button):not(button *):not(.btn):not(.btn *) .text-slate-500,
+.theme-sunny-light :not(button):not(button *):not(.btn):not(.btn *) .text-zinc-400,
+.theme-sunny-light :not(button):not(button *):not(.btn):not(.btn *) .text-zinc-500,
+.theme-sunny-light :not(button):not(button *):not(.btn):not(.btn *) .text-purple-400,
+.theme-sunny-light :not(button):not(button *):not(.btn):not(.btn *) .text-purple-500 {
+  color: #334155 !important;
+}
+
+/* HIGH-CONTRAST ACCENT COLORS FOR TEXT IN CARDS */
+.theme-sunny-light :not(button):not(button *) .text-\[\#FF007A\],
+.theme-sunny-light :not(button):not(button *) .text-pink-400,
+.theme-sunny-light :not(button):not(button *) .text-pink-500,
+.theme-sunny-light :not(button):not(button *) .text-rose-400,
+.theme-sunny-light :not(button):not(button *) .text-rose-500 {
+  color: #C2410C !important; /* Dark Orange Accent */
+  font-weight: 800 !important;
+}
+
+.theme-sunny-light :not(button):not(button *) .text-\[\#00D1FF\],
+.theme-sunny-light :not(button):not(button *) .text-cyan-300,
+.theme-sunny-light :not(button):not(button *) .text-cyan-400,
+.theme-sunny-light :not(button):not(button *) .text-blue-400 {
+  color: #0284C7 !important; /* Deep Sky Blue Accent */
+  font-weight: 800 !important;
+}
+
+.theme-sunny-light :not(button):not(button *) .text-\[\#00FFAB\],
+.theme-sunny-light :not(button):not(button *) .text-emerald-400,
+.theme-sunny-light :not(button):not(button *) .text-emerald-500 {
+  color: #047857 !important; /* Dark Emerald Accent */
+  font-weight: 800 !important;
+}
+
+/* EVENT CARD BADGES & LIGHT PILLS IN SUNNY LIGHT MODE */
+.theme-sunny-light .bg-\[\#FF007A\]\/20,
+.theme-sunny-light .bg-\[\#FF007A\]\/15 {
+  background-color: #FFEDD5 !important;
+  border-color: #FDBA74 !important;
+  color: #C2410C !important;
+}
+
+.theme-sunny-light .bg-\[\#FF007A\]\/20 *,
+.theme-sunny-light .bg-\[\#FF007A\]\/15 * {
+  color: #C2410C !important;
+  font-weight: 800 !important;
+}
+
+.theme-sunny-light .bg-\[\#00D1FF\]\/20,
+.theme-sunny-light .bg-\[\#00D1FF\]\/15 {
+  background-color: #E0F2FE !important;
+  border-color: #7DD3FC !important;
+  color: #0284C7 !important;
+}
+
+.theme-sunny-light .bg-\[\#00D1FF\]\/20 *,
+.theme-sunny-light .bg-\[\#00D1FF\]\/15 * {
+  color: #0284C7 !important;
+  font-weight: 800 !important;
+}
+
+.theme-sunny-light .bg-white\/5 {
+  background-color: #CBD5E1 !important;
+  border-color: #94A3B8 !important;
+  color: #0F172A !important;
+}
+
+.theme-sunny-light .bg-white\/5 * {
+  color: #0F172A !important;
+  font-weight: 800 !important;
+}
+
+/* FORM INPUTS & SELECTS */
+.theme-sunny-light input,
+.theme-sunny-light select,
+.theme-sunny-light textarea {
+  color: #0F172A !important;
+  background-color: #FFFFFF !important;
+  border-color: #CBD5E1 !important;
+}
+
+.theme-sunny-light input::placeholder,
+.theme-sunny-light textarea::placeholder {
+  color: #64748B !important;
+  font-weight: 500 !important;
+}
+
+.theme-sunny-light select option {
+  background-color: #FFFFFF !important;
+  color: #0F172A !important;
+}
+
+/* ==========================================================================
+   BUTTONS ON LIGHT COMPONENTS: KEEP BUTTON BACKGROUNDS DARK & CRISP WHITE TEXT
+   ========================================================================== */
+
+/* All standard buttons (inactive tabs, filter buttons, option buttons) */
+.theme-sunny-light button,
+.theme-sunny-light a.btn,
+.theme-sunny-light [role="button"] {
+  background-color: #0F172A !important; /* Solid Dark Slate Box */
+  color: #FFFFFF !important;
+  border: 1px solid #334155 !important;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.25) !important;
+}
+
+/* Ensure ALL text, spans, icons inside buttons are 100% Crisp White */
+.theme-sunny-light button *,
+.theme-sunny-light button span,
+.theme-sunny-light button p,
+.theme-sunny-light button div,
+.theme-sunny-light button svg,
+.theme-sunny-light a.btn *,
+.theme-sunny-light [role="button"] * {
+  color: #FFFFFF !important;
+  fill: currentColor !important;
+}
+
+/* Active & Accent Buttons (Vibrant Dark Colors) */
+/* 1. Dark Orange Primary / Active Button */
+.theme-sunny-light button[class*="bg-\[\#FF007A\]"],
+.theme-sunny-light .bg-\[\#FF007A\],
+.theme-sunny-light button[class*="bg-orange-"],
+.theme-sunny-light button[class*="bg-rose-"] {
+  background-color: #C2410C !important; /* Dark Orange */
+  color: #FFFFFF !important;
+  border: 1px solid #EA580C !important;
+  box-shadow: 0 4px 14px rgba(194, 65, 12, 0.35) !important;
+}
+
+.theme-sunny-light button[class*="bg-\[\#FF007A\]"] *,
+.theme-sunny-light .bg-\[\#FF007A\] * {
+  color: #FFFFFF !important;
+}
+
+/* 2. Deep Blue Button */
+.theme-sunny-light button[class*="bg-\[\#00D1FF\]"],
+.theme-sunny-light button[class*="bg-blue-"],
+.theme-sunny-light button[class*="bg-cyan-"] {
+  background-color: #0284C7 !important; /* Deep Blue */
+  color: #FFFFFF !important;
+  border: 1px solid #0369A1 !important;
+  box-shadow: 0 4px 14px rgba(2, 132, 199, 0.35) !important;
+}
+
+.theme-sunny-light button[class*="bg-\[\#00D1FF\]"] * {
+  color: #FFFFFF !important;
+}
+
+/* 3. Deep Green Button */
+.theme-sunny-light button[class*="bg-emerald-"],
+.theme-sunny-light button[class*="bg-green-"] {
+  background-color: #15803D !important; /* Deep Emerald */
+  color: #FFFFFF !important;
+  border: 1px solid #166534 !important;
+  box-shadow: 0 4px 14px rgba(21, 128, 61, 0.35) !important;
+}
+
+/* 4. Deep Purple Button */
+.theme-sunny-light button[class*="bg-purple-"],
+.theme-sunny-light button[class*="bg-violet-"] {
+  background-color: #7E22CE !important; /* Deep Purple */
+  color: #FFFFFF !important;
+  border: 1px solid #6B21A8 !important;
+  box-shadow: 0 4px 14px rgba(126, 34, 206, 0.35) !important;
+}
+
+/* ==========================================================================
+   GCU THEME OVERRIDES (Brown, Maroon, White, Orange & Silver Palette)
+   ========================================================================== */
+
+.theme-gcu,
+.theme-gcu body {
+  color: #FFFFFF !important;
+  background-color: #2B080E !important;
+}
+
+.theme-gcu .bg-\[\#1A032E\],
+.theme-gcu .bg-\[\#0F011E\],
+.theme-gcu .bg-\[\#2A064D\],
+.theme-gcu .bg-\[\#2E004F\],
+.theme-gcu .bg-\[\#120124\],
+.theme-gcu .bg-\[\#0A0016\],
+.theme-gcu .bg-\[\#3B075C\],
+.theme-gcu .bg-\[\#2A0347\],
+.theme-gcu .bg-zinc-900,
+.theme-gcu .bg-zinc-950 {
+  background-color: #3D0C16 !important;
+  border-color: #C0C0C0 !important;
+  box-shadow: 0 10px 25px -5px rgba(234, 88, 12, 0.25) !important;
+}
+
+.theme-gcu input,
+.theme-gcu select,
+.theme-gcu textarea {
+  background-color: #1F050A !important;
+  color: #FFFFFF !important;
+  border-color: #FB923C !important;
+}
+
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes flicker {
+  0%, 100% { opacity: 1; text-shadow: 0 0 15px rgba(249, 115, 22, 0.9), 0 0 25px rgba(251, 146, 60, 0.8); }
+  50% { opacity: 0.8; text-shadow: 0 0 5px rgba(249, 115, 22, 0.4), 0 0 10px rgba(251, 146, 60, 0.3); }
+  75% { opacity: 0.95; text-shadow: 0 0 22px rgba(249, 115, 22, 1), 0 0 35px rgba(251, 146, 60, 0.9); }
+}
+
+.animate-flicker {
+  animation: flicker 2.2s infinite ease-in-out;
+}
+
+

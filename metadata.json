@@ -1,0 +1,10 @@
+{
+  "name": "Fresherism Event Hub",
+  "description": "A vibrant, high-energy management dashboard for university freshers' day events, allowing convenors, student registrations, scheduling conflict detection, coordinator tools, and dynamic score uploads with interactive leaderboard analytics.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

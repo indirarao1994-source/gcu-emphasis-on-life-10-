@@ -1,0 +1,59 @@
+{
+  "short_name": "Fresherism'26",
+  "name": "Fresherism Carnival 2026 - Garden City University",
+  "description": "Official GCU Coralverse Fresherism Carnival 2026 Portal for Student Registrations, Event Schedules, Scoring & Coordinator Directives",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0F011E",
+  "theme_color": "#0F011E",
+  "categories": ["education", "events", "entertainment"],
+  "icons": [
+    {
+      "src": "/pwa-192.png",
+      "type": "image/png",
+      "sizes": "192x192",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-192.png",
+      "type": "image/png",
+      "sizes": "192x192",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/pwa-512.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-512.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/apple-touch-icon.png",
+      "type": "image/png",
+      "sizes": "180x180"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Student Events Portal",
+      "short_name": "Events",
+      "description": "Register and view Fresherism 2026 Events",
+      "url": "/?view=events",
+      "icons": [{ "src": "/pwa-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Live Leaderboard",
+      "short_name": "Leaderboard",
+      "description": "Check current scores and winners",
+      "url": "/?view=leaderboard",
+      "icons": [{ "src": "/pwa-192.png", "sizes": "192x192" }]
+    }
+  ]
+}
