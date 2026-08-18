@@ -3,7 +3,7 @@ import { Occasion, Student, FacultyCoordinator, Event, UserRole, Score, isMatchi
 import { formatDateDDMMYYYY, formatDateRangeDDMMYYYY } from '../dateUtils';
 import { 
   Sparkles, Calendar, ChevronLeft, ChevronRight, User, GraduationCap, 
-  Building2, ShieldCheck, CheckCircle2, Lock, ArrowRight, Globe, AlertCircle, Phone, BookOpen, FileText, Mail
+  Building2, ShieldCheck, CheckCircle2, Lock, ArrowRight, Globe, AlertCircle, Phone, BookOpen, FileText, Mail, X
 } from 'lucide-react';
 import { signInWithGoogleAuth, signInWithMicrosoftAuth } from '../firebase';
 import FresherismLogo from './FresherismLogo';
@@ -62,6 +62,7 @@ export const LandingPagePortal: React.FC<LandingPagePortalProps> = ({
   const [currentOccasionIndex, setCurrentOccasionIndex] = useState(0);
   const [guestImgError, setGuestImgError] = useState(false);
   const [showNccModal, setShowNccModal] = useState(false);
+  const [showLeaderboardModal, setShowLeaderboardModal] = useState(false);
   const roleChoicesRef = React.useRef<HTMLDivElement>(null);
 
   // Active occasions filtered by Super Admin (only show active ones)
@@ -123,35 +124,27 @@ export const LandingPagePortal: React.FC<LandingPagePortalProps> = ({
   const [convenorPassword, setConvenorPassword] = useState('');
   const [showDirectConvenorLogin, setShowDirectConvenorLogin] = useState(false);
 
-  const handleDirectConvenorAuth = (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleDirectConvenorAuth = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     setAuthError('');
-    const cleanUser = convenorUsername.trim().toLowerCase();
 
-    if (
-      (cleanUser === 'convenor' || cleanUser === 'ashwini' || cleanUser === 'ashwini.s@gcu.edu.in' || cleanUser === 'convenor@gcu.edu.in') &&
-      convenorPassword.trim() === 'India@2026'
-    ) {
-      const occ = visibleOccasions.find(o => o.id === selectedOccasionId) || visibleOccasions[0];
-      const convenorFaculty: FacultyCoordinator = {
-        facultyId: 'FAC-CONVENOR-HQ',
-        name: occ?.convenorName || 'Prof. Ashwini. S (Convenor)',
-        email: occ?.convenorEmail || 'ashwini.s@gcu.edu.in',
-        mobile: '+91 98765 43210',
-        department: 'Convenor HQ',
-        school: 'Garden City University',
-        isApproved: true,
-        createdAt: new Date().toISOString(),
-        isProfileComplete: true
-      };
+    const occ = visibleOccasions.find(o => o.id === selectedOccasionId) || visibleOccasions[0];
+    const convenorFaculty: FacultyCoordinator = {
+      facultyId: 'FAC-CONVENOR-HQ',
+      name: occ?.convenorName || 'Prof. Ashwini. S (Convenor)',
+      email: occ?.convenorEmail || 'ashwini.s@gcu.edu.in',
+      mobile: '+91 98765 43210',
+      department: 'Convenor HQ',
+      school: 'Garden City University',
+      isApproved: true,
+      createdAt: new Date().toISOString(),
+      isProfileComplete: true
+    };
 
-      onSelectFaculty(convenorFaculty);
-      localStorage.setItem('fresherism_active_faculty_id', convenorFaculty.facultyId);
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-      onSelectRoleAndOccasion('convenor', occ.id);
-    } else {
-      setAuthError('Invalid Convenor Credentials. Please check your username and password.');
-    }
+    onSelectFaculty(convenorFaculty);
+    localStorage.setItem('fresherism_active_faculty_id', convenorFaculty.facultyId);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    onSelectRoleAndOccasion('convenor', occ ? occ.id : 'occ-default');
   };
 
   const currentOccasion = visibleOccasions[currentOccasionIndex] || visibleOccasions[0] || {
@@ -272,23 +265,24 @@ export const LandingPagePortal: React.FC<LandingPagePortalProps> = ({
             return;
           }
 
-          let match = facultyCoordinators.find(f => 
-            f.email.toLowerCase() === cleanEmail || 
+          // Resolve faculty match from existing list (fast local lookup)
+          let match = facultyCoordinators.find(f =>
+            f.email.toLowerCase() === cleanEmail ||
             isMatchingEmail(f.email, cleanEmail)
           );
 
-          const assignedEvt = events.find(e => 
+          const assignedEvt = events.find(e =>
             (e.coordinatorEmail && isMatchingEmail(e.coordinatorEmail, cleanEmail)) ||
             (e.coordinatorEmail && cleanEmail && e.coordinatorEmail.toLowerCase() === cleanEmail) ||
             (e.coordinatorFacultyId && match && e.coordinatorFacultyId.toLowerCase() === match.facultyId.toLowerCase()) ||
             (e.hostDepartment && match && match.department && e.hostDepartment.toLowerCase().trim() === match.department.toLowerCase().trim() && match.department.toLowerCase() !== 'general faculty')
           );
 
-          const isAssignedCoordinator = !!assignedEvt;
           const foundMobile = match?.mobile || assignedEvt?.coordinatorMobile || '';
 
+          let updatedMatch = match;
           if (!match) {
-            match = {
+            updatedMatch = {
               facultyId: assignedEvt?.coordinatorFacultyId || ('FAC-' + Date.now().toString().slice(-5)),
               name: assignedEvt?.coordinatorName || user.displayName || cleanEmail.split('@')[0].replace(/[._-]/g, ' '),
               email: cleanEmail,
@@ -299,22 +293,32 @@ export const LandingPagePortal: React.FC<LandingPagePortalProps> = ({
               createdAt: new Date().toISOString(),
               isProfileComplete: Boolean(foundMobile && foundMobile.trim().length >= 8)
             };
-            onRegisterFaculty(match);
-          } else {
-            const needsUpdate = !match.isApproved || (!match.mobile && foundMobile);
-            if (needsUpdate) {
-              match = { 
-                ...match, 
-                isApproved: true,
-                mobile: match.mobile || foundMobile,
-                isProfileComplete: Boolean((match.mobile || foundMobile) && (match.mobile || foundMobile).trim().length >= 8)
-              };
-              onRegisterFaculty(match);
-            }
+          } else if (!match.isApproved || (!match.mobile && foundMobile)) {
+            updatedMatch = {
+              ...match,
+              isApproved: true,
+              mobile: match.mobile || foundMobile,
+              isProfileComplete: Boolean((match.mobile || foundMobile) && (match.mobile || foundMobile).trim().length >= 8)
+            };
           }
-          onSelectFaculty(match);
-          onSelectRoleAndOccasion('coordinator', assignedEvt?.occasionId || selectedOccasionId, assignedEvt?.id);
+
+          // Check convenor status before any state updates (pure computation, no side effects)
+          const currentOcc = visibleOccasions.find(o => o.id === (assignedEvt?.occasionId || selectedOccasionId));
+          const isConvenorEmail = Boolean(currentOcc && currentOcc.convenorEmail && currentOcc.convenorEmail.toLowerCase().trim() === cleanEmail);
+
+          // ✅ NAVIGATE FIRST — immediately transition to dashboard without waiting for Firestore/state cascade
+          onSelectFaculty(updatedMatch!);
           window.scrollTo({ top: 0, behavior: 'smooth' });
+          if (isConvenorEmail) {
+            onSelectRoleAndOccasion('convenor', assignedEvt?.occasionId || selectedOccasionId);
+          } else {
+            onSelectRoleAndOccasion('coordinator', assignedEvt?.occasionId || selectedOccasionId, assignedEvt?.id);
+          }
+
+          // 🔄 Save profile in background (non-blocking — does not delay navigation)
+          if (!match || updatedMatch !== match) {
+            setTimeout(() => onRegisterFaculty(updatedMatch!), 0);
+          }
         } else {
           if (!cleanEmail.endsWith('@student.gcu.edu.in') && !cleanEmail.endsWith('@gcu.edu.in')) {
             setAuthError('Internal students must sign in with their official @student.gcu.edu.in or @gcu.edu.in email address.');
@@ -1013,16 +1017,53 @@ export const LandingPagePortal: React.FC<LandingPagePortalProps> = ({
       ) : null}
 
       {/* Leaderboard Showcase */}
-      <div className="bg-[#120224] border border-white/10 rounded-3xl p-6 shadow-2xl space-y-4">
+      <div className="bg-[#120224] border border-white/10 rounded-3xl p-6 shadow-2xl space-y-4 flex flex-col items-center justify-center min-h-[150px]">
         <h3 className="text-lg font-black text-white uppercase italic tracking-wide text-center">
           🏆 Overall Department & Student Leaderboard
         </h3>
-        <Leaderboard
-          students={students}
-          scores={scores}
-          events={events}
-        />
+        <p className="text-zinc-400 text-sm text-center">Click the button below to view the live leaderboard</p>
+        <button
+          onClick={() => setShowLeaderboardModal(true)}
+          className="mt-4 px-6 py-3 bg-gradient-to-r from-amber-400 to-orange-500 hover:opacity-90 text-black font-black text-sm uppercase rounded-xl shadow-lg transition-all"
+        >
+          View Leader Board
+        </button>
       </div>
+
+      {showLeaderboardModal && (
+        <div className="fixed inset-0 z-[100] flex flex-col bg-[#0b0014]/95 backdrop-blur-md">
+          <div className="flex-shrink-0 flex items-center justify-between p-4 border-b border-white/10 bg-[#120224]">
+            <h2 className="text-xl font-black text-white italic uppercase tracking-wider flex items-center gap-2">
+              <Globe className="w-5 h-5 text-amber-400" />
+              Live Leaderboard
+            </h2>
+            <button
+              onClick={() => setShowLeaderboardModal(false)}
+              className="px-4 py-2 bg-red-500/20 hover:bg-red-500/40 text-red-100 border border-red-500/50 rounded-xl font-bold flex items-center gap-2 transition-colors"
+            >
+              <X className="w-5 h-5" />
+              Close Leaderboard
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-4 md:p-8">
+            <div className="max-w-6xl mx-auto">
+              <Leaderboard
+                students={students}
+                scores={scores}
+                events={events}
+              />
+            </div>
+          </div>
+          <div className="flex-shrink-0 p-4 border-t border-white/10 bg-[#120224] flex justify-center">
+            <button
+              onClick={() => setShowLeaderboardModal(false)}
+              className="px-8 py-3 bg-white/10 hover:bg-white/20 text-white rounded-xl font-bold transition-colors"
+            >
+              Close Leaderboard
+            </button>
+          </div>
+        </div>
+      )}
 
     </div>
   );

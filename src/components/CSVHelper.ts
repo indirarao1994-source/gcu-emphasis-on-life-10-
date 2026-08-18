@@ -4,6 +4,7 @@
  */
 
 import { Event, Score, Student, getStudentRegisteredEventIds } from '../types';
+import { computeUnifiedLeaderboard } from '../utils/LeaderboardUtils';
 
 // Helper to escape CSV values
 function escapeCSV(val: string): string {
@@ -313,6 +314,7 @@ export function downloadStudentRegistrationsCSV(students: Student[], events: Eve
 export function downloadLeaderboardCSV(students: Student[], scores: Score[], events: Event[]): string {
   const headers = [
     'Rank',
+    'USN NO',
     'Register No',
     'Student Name',
     'Department',
@@ -322,27 +324,17 @@ export function downloadLeaderboardCSV(students: Student[], scores: Score[], eve
     'Winner Flag'
   ];
 
-  // Calculate totals per student
-  const studentTotals = students.map(s => {
-    const studentScores = scores.filter(sc => sc.studentRegisterNo === s.registerNo);
-    const total = studentScores.reduce((acc, curr) => acc + (curr.totalScore || 0), 0);
-    const wins = studentScores.filter(sc => sc.isWinner).length;
-    return {
-      student: s,
-      total,
-      wins,
-      eventsCount: studentScores.length
-    };
-  }).sort((a, b) => b.total - a.total);
+  const unifiedEntries = computeUnifiedLeaderboard(students, scores, events);
 
-  const rows = studentTotals.map((item, index) => [
-    (index + 1).toString(),
-    item.student.registerNo,
-    item.student.name,
-    item.student.department || '',
-    item.student.programName || '',
-    item.total.toString(),
-    item.eventsCount.toString(),
+  const rows = unifiedEntries.map((item, index) => [
+    item.rank.toString(),
+    item.usnNo || '',
+    item.registerNo || '',
+    item.name,
+    item.department || '',
+    item.programName || '',
+    item.totalScore.toString(),
+    item.eventsParticipatedCount.toString(),
     item.wins > 0 ? `WINNER (${item.wins} events)` : 'Participant'
   ]);
 
@@ -399,6 +391,7 @@ export function downloadStudentSummaryWithEventCount(students: Student[], events
   const headers = [
     'Sl No',
     'Register No',
+    'USN No',
     'Student Name',
     'Email ID',
     'Mobile Number',
@@ -410,7 +403,17 @@ export function downloadStudentSummaryWithEventCount(students: Student[], events
     'Email Verified'
   ];
 
-  const rows = students.map((s, idx) => {
+  // Deduplicate students based on USN (preferred) or RegisterNo
+  const uniqueStudentsMap = new Map<string, Student>();
+  students.forEach(s => {
+    const key = (s.usnNo || s.registerNo || '').trim().toUpperCase();
+    if (key && !uniqueStudentsMap.has(key)) {
+      uniqueStudentsMap.set(key, s);
+    }
+  });
+  const uniqueStudents = Array.from(uniqueStudentsMap.values());
+
+  const rows = uniqueStudents.map((s, idx) => {
     const regEventIds = getStudentRegisteredEventIds(s, scores);
     const eventTitles = regEventIds
       .map(id => events.find(e => e.id === id)?.title)
@@ -420,6 +423,7 @@ export function downloadStudentSummaryWithEventCount(students: Student[], events
     return [
       (idx + 1).toString(),
       s.registerNo || '',
+      s.usnNo || '',
       s.name || '',
       s.email || '',
       s.mobile || '',

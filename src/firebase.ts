@@ -16,8 +16,7 @@ import {
   getDocFromServer,
   writeBatch,
   arrayUnion,
-  arrayRemove,
-  FieldValue
+  arrayRemove
 } from 'firebase/firestore';
 import {
   getAuth,
@@ -28,6 +27,7 @@ import {
   GoogleAuthProvider,
   OAuthProvider,
   signInWithPopup,
+  signInWithRedirect,
   signOut,
   updateProfile,
   onAuthStateChanged,
@@ -99,7 +99,9 @@ function cleanObjectForFirestore<T>(obj: T): T {
   if (obj === null || obj === undefined) return obj as unknown as T;
   if (typeof obj !== 'object') return obj;
   if (Array.isArray(obj)) {
-    return obj.map(item => cleanObjectForFirestore(item)) as unknown as T;
+    return obj
+      .filter(item => item !== undefined)
+      .map(item => cleanObjectForFirestore(item)) as unknown as T;
   }
   const cleaned: Record<string, any> = {};
   for (const [key, val] of Object.entries(obj)) {
@@ -118,27 +120,17 @@ export async function seedFirestoreIfEmpty() {
   try {
     const snap = await getDocs(eventsCol);
     if (snap.empty) {
+      console.log('🌱 Firestore events collection is empty. Seeding initial events...');
       for (const evt of INITIAL_EVENTS) {
         await setDoc(doc(db, 'events', evt.id), cleanObjectForFirestore(evt));
       }
-    } else {
-      for (const evt of INITIAL_EVENTS) {
-        // Only seed if doc id does NOT exist in Firestore
-        const exists = snap.docs.some(d => d.id === evt.id);
-        if (!exists) {
-          const titleMatch = snap.docs.some(d => d.data().title?.trim().toLowerCase() === evt.title.trim().toLowerCase());
-          if (!titleMatch) {
-            await setDoc(doc(db, 'events', evt.id), cleanObjectForFirestore(evt));
-          }
-        }
-      }
     }
 
-    // Seed faculty coordinators if missing
+    // Seed faculty coordinators if collection is completely empty
     const coordSnap = await getDocs(coordinatorsCol);
-    for (const coord of INITIAL_FACULTY_COORDINATORS) {
-      const exists = coordSnap.docs.some(d => d.id === coord.facultyId || (coord.email && d.data().email?.trim().toLowerCase() === coord.email.trim().toLowerCase()));
-      if (!exists) {
+    if (coordSnap.empty) {
+      console.log('🌱 Firestore coordinators collection is empty. Seeding initial coordinators...');
+      for (const coord of INITIAL_FACULTY_COORDINATORS) {
         await setDoc(doc(db, 'facultyCoordinators', coord.facultyId), cleanObjectForFirestore(coord));
       }
     }
@@ -374,19 +366,46 @@ export async function dbClearAllEvents() {
 
 export async function dbSaveStudent(student: Student): Promise<{ok: boolean; reason?: string}> {
   try {
-    const rawId = (student.registerNo && !student.registerNo.startsWith('GCU-TEMP-'))
+    const cleanReg = (student.registerNo && !student.registerNo.startsWith('GCU-TEMP-'))
       ? student.registerNo.trim().toUpperCase()
-      : (student.email ? student.email.trim().toLowerCase() : (student.uid || `STD-${Date.now()}`));
+      : '';
+    const cleanEmail = student.email ? student.email.trim().toLowerCase() : '';
+    const cleanUid = student.uid ? student.uid.trim() : '';
+
+    const rawId = cleanReg || cleanEmail || cleanUid || `STD-${Date.now()}`;
     const safeDocId = rawId.replace(/\//g, '_');
 
     const docRef = doc(db, 'students', safeDocId);
     const finalStudent = cleanObjectForFirestore({
       ...student,
-      registerNo: (student.registerNo && !student.registerNo.startsWith('GCU-TEMP-')) ? student.registerNo.trim().toUpperCase() : student.registerNo,
+      registerNo: cleanReg || student.registerNo,
       name: student.name ? formatToTitleCase(student.name) : student.name
     });
 
     await setDoc(docRef, finalStudent, { merge: true });
+
+    // Clean up stale initial document ID (e.g. stored under email when docId !== safeDocId)
+    if (cleanReg && cleanEmail && cleanEmail !== safeDocId) {
+      try {
+        const emailDocRef = doc(db, 'students', cleanEmail.replace(/\//g, '_'));
+        const emailSnap = await getDoc(emailDocRef);
+        if (emailSnap.exists()) {
+          const oldData = emailSnap.data() as Student;
+          // Merge any events from old doc into new document before deleting old doc
+          if (oldData?.registeredEventIds && oldData.registeredEventIds.length > 0) {
+            const combined = Array.from(new Set([
+              ...(finalStudent.registeredEventIds || []),
+              ...oldData.registeredEventIds
+            ]));
+            await setDoc(docRef, { registeredEventIds: combined }, { merge: true });
+          }
+          await deleteDoc(emailDocRef).catch(() => {});
+        }
+      } catch (e) {
+        console.warn('Stale student doc cleanup warning:', e);
+      }
+    }
+
     return { ok: true };
   } catch (err: any) {
     handleFirestoreError('dbSaveStudent', err);
@@ -394,19 +413,69 @@ export async function dbSaveStudent(student: Student): Promise<{ok: boolean; rea
   }
 }
 
-export async function dbDeleteStudent(registerNo: string) {
+export async function dbDeleteStudent(identifier: string) {
   try {
-    const cleanReg = (registerNo || '').trim().toUpperCase();
-    if (!cleanReg) {
-      throw new Error('Invalid register number');
+    const cleanId = (identifier || '').trim();
+    if (!cleanId) {
+      throw new Error('Invalid student identifier');
     }
-    const safeDocId = cleanReg.replace(/\//g, '_');
-    console.log('Deleting student:', cleanReg, 'DocID:', safeDocId);
-    await deleteDoc(doc(db, 'students', safeDocId));
-    if (safeDocId !== registerNo) {
-      await deleteDoc(doc(db, 'students', registerNo)).catch(() => {});
+    const normId = cleanId.toUpperCase();
+    const normEmail = cleanId.toLowerCase();
+
+    console.log('🗑️ Deleting student and all associated data:', cleanId);
+
+    // Query students collection for any documents matching registerNo, email, uid, or doc.id
+    const studentsSnap = await getDocs(studentsCol);
+    const docsToDelete: string[] = [];
+
+    studentsSnap.forEach((d) => {
+      const data = d.data() as Student;
+      const docId = d.id.toUpperCase();
+      const stReg = (data.registerNo || '').trim().toUpperCase();
+      const stEmail = (data.email || '').trim().toLowerCase();
+      const stUid = (data.uid || '').trim();
+
+      if (
+        docId === normId ||
+        docId === normEmail.toUpperCase() ||
+        (stReg && stReg === normId) ||
+        (stEmail && stEmail === normEmail) ||
+        (stUid && stUid === cleanId)
+      ) {
+        docsToDelete.push(d.id);
+      }
+    });
+
+    const directDocId = cleanId.replace(/\//g, '_');
+    if (!docsToDelete.includes(directDocId)) {
+      docsToDelete.push(directDocId);
     }
-    console.log('✅ Student deleted successfully:', cleanReg);
+
+    // Delete all matching student documents
+    for (const dId of docsToDelete) {
+      await deleteDoc(doc(db, 'students', dId)).catch(() => {});
+    }
+
+    // Cascade delete any score documents belonging to this student
+    try {
+      const scoresSnap = await getDocs(scoresCol);
+      for (const d of scoresSnap.docs) {
+        const data = d.data() as Score;
+        const scReg = (data.studentRegisterNo || '').trim().toUpperCase();
+        if (
+          scReg === normId ||
+          scReg === normEmail.toUpperCase() ||
+          d.id.startsWith(`${normId}_`) ||
+          d.id.startsWith(`${normEmail}_`)
+        ) {
+          await deleteDoc(doc(db, 'scores', d.id)).catch(() => {});
+        }
+      }
+    } catch (scErr) {
+      console.warn('Warning cascading score deletion for student:', scErr);
+    }
+
+    console.log('✅ Student and associated scores deleted successfully:', cleanId);
     return { ok: true };
   } catch (err: any) {
     console.error('❌ Error deleting student:', err);
@@ -724,7 +793,8 @@ export async function dbSaveStudentsAndScoresBatch(studentsToSave: Student[], sc
         ...score,
         id: canonicalDocId,
         studentRegisterNo: cleanReg,
-        eventId: cleanEvtId
+        eventId: cleanEvtId,
+        scoreEntered: true
       };
       ops.push({ data: cleanObjectForFirestore(finalScoreToSave), ref: canonicalDocRef });
     });
@@ -842,8 +912,14 @@ export async function checkAuthEmailVerified(): Promise<boolean> {
 
 export async function signInWithGoogleAuth() {
   const provider = new GoogleAuthProvider();
-  const result = await signInWithPopup(auth, provider);
-  return result.user;
+  try {
+    const result = await signInWithPopup(auth, provider);
+    return result.user;
+  } catch (err: any) {
+    console.warn('Google popup auth failed/blocked, attempting redirect auth:', err);
+    await signInWithRedirect(auth, provider);
+    return null;
+  }
 }
 
 export async function signInWithMicrosoftAuth(tenantId?: string) {
@@ -858,8 +934,14 @@ export async function signInWithMicrosoftAuth(tenantId?: string) {
       prompt: 'select_account'
     });
   }
-  const result = await signInWithPopup(auth, provider);
-  return result.user;
+  try {
+    const result = await signInWithPopup(auth, provider);
+    return result.user;
+  } catch (err: any) {
+    console.warn('Microsoft popup auth failed/blocked, attempting redirect auth:', err);
+    await signInWithRedirect(auth, provider);
+    return null;
+  }
 }
 
 export async function logoutStudentAuth() {

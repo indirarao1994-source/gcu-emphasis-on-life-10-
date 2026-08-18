@@ -11,12 +11,13 @@ import { ArrowRight,
 } from 'lucide-react';
 import { Event, Student, Score, Notification, Occasion, findStudentMatch, extractEmailFromUser } from '../types';
 import { DEPARTMENT_PROGRAMS } from '../data/departmentData';
+import { INITIAL_EVENTS } from '../data/initialData';
 import ConflictManager from './ConflictManager';
 import FresherismLogo from './FresherismLogo';
 import { StudentQRModal } from './StudentQRModal';
 import { NccInfoModal } from './NccInfoModal';
 import { downloadStudentCertificateDocx } from './DocxTemplateHelper';
-import { formatDateDDMMYYYY, isEventOver } from '../dateUtils';
+import { formatDateDDMMYYYY, isEventOver, isEventRegistrationClosed } from '../dateUtils';
 import { 
   signUpStudentAuth, 
   signInStudentAuth, 
@@ -41,7 +42,7 @@ interface StudentDashboardProps {
   occasions?: Occasion[];
   onRegisterStudent: (newStudent: Student) => void;
   onSelectStudent: (student: Student) => void;
-  onToggleEventRegistration: (registerNo: string, eventId: string) => void;
+  onToggleEventRegistration: (registerNo: string, eventId: string, tShirtSize?: string) => void;
   onVerifyStudentEmail?: (studentRegNo: string) => void;
   onGoToLanding?: () => void;
   onShowFreshathon?: () => void;
@@ -65,8 +66,62 @@ export default function StudentDashboard({
   // Form State for registration
   const [viewBrochureUrl, setViewBrochureUrl] = useState<string | null>(null);
   const [selectedDetailEvent, setSelectedDetailEvent] = useState<Event | null>(null);
+  const [modalTShirtSize, setModalTShirtSize] = useState<string>('M');
 
-  // Resolve exact certificate template URL for a given event, falling back to activeOccasion
+  // Mandatory T-Shirt Modal States for Student Sign-In & Editing
+  const [showTShirtModal, setShowTShirtModal] = useState<boolean>(false);
+  const [selectedTShirtSize, setSelectedTShirtSize] = useState<string>('M');
+
+  // Automatically prompt T-shirt modal ONLY for students registered in Freshathon
+  const isStudentRegisteredForFreshathon = React.useMemo(() => {
+    if (!activeStudent) return false;
+    return activeStudent.registeredEventIds.some(
+      (id) => id === 'evt-freshathon-sprint' || id.toLowerCase().includes('freshathon')
+    ) || events.some(
+      (e) => activeStudent.registeredEventIds.includes(e.id) && (e.title?.toLowerCase().includes('freshathon') || e.id === 'evt-freshathon-sprint')
+    );
+  }, [activeStudent?.registeredEventIds, events]);
+
+  React.useEffect(() => {
+    if (activeStudent) {
+      if (activeStudent.tShirtSize && activeStudent.tShirtSize.trim() !== '') {
+        setSelectedTShirtSize(activeStudent.tShirtSize);
+      } else if (activeStudent.registerNo && isStudentRegisteredForFreshathon) {
+        // Only prompt T-shirt modal if the student is registered for Freshathon
+        setShowTShirtModal(true);
+      }
+    }
+  }, [activeStudent?.tShirtSize, activeStudent?.registerNo, isStudentRegisteredForFreshathon]);
+
+  // Ensure Freshathon is always available in events list
+  const displayEventsList = useMemo(() => {
+    const list = [...events];
+    const freshathonInList = list.some(e => e.id === 'evt-freshathon-sprint' || (e.title && e.title.toLowerCase().includes('freshathon')));
+    if (!freshathonInList) {
+      const defaultFreshathon = INITIAL_EVENTS.find(e => e.id === 'evt-freshathon-sprint') || {
+        id: 'evt-freshathon-sprint',
+        occasionId: 'occ-fresherism-26',
+        title: 'Freshathon - Sprinting Towards Glory',
+        description: 'The Grand Finale Independence Day Mini-Marathon! Sprint towards glory, celebrate freedom, physical fitness, and collegiate sportsmanship. All participants earn 100 Points towards their GCU leaderboard ranking! Trophies and special certificates awarded to top sprinters.',
+        date: '2026-08-15',
+        timeStart: '06:30',
+        timeEnd: '09:30',
+        venue: 'GCU Students Knowledge Park (Hoskote)',
+        hostDepartment: 'Department of Physical Education & Sports / EOL Committee',
+        coordinatorFacultyId: 'FAC-102',
+        coordinatorName: 'Prof. Kushal B. S.',
+        coordinatorMobile: '+91 95359 45757',
+        coordinatorEmail: 'kushal.bs@gcu.edu.in',
+        studentCoordinatorName: 'Sports Committee Coordinators',
+        rules: '1. Open to all registered Garden City University students.\n2. Reporting time: 06:00 AM at GCU Students Knowledge Park (Hoskote).\n3. Athletic attire and running shoes are mandatory.\n4. Completing the mini-marathon awards 100 Points to your profile!\n5. Refreshments & Medical Aid provided on track.',
+        imageUrl: 'https://images.unsplash.com/photo-1530541930197-ff16ac917b0e?auto=format&fit=crop&q=80&w=800',
+        brochureUrl: 'https://images.unsplash.com/photo-1530541930197-ff16ac917b0e?auto=format&fit=crop&q=80&w=800',
+        eventType: 'individual' as const
+      };
+      list.unshift(defaultFreshathon);
+    }
+    return list;
+  }, [events]);
   const getEventCertificateTemplateUrl = (eventItem: Event | null): string | undefined => {
     if (!eventItem) return activeOccasion?.certificateTemplateUrl;
     const evtOccasion = occasions?.find(o => o.id === eventItem.occasionId);
@@ -293,7 +348,7 @@ export default function StudentDashboard({
     }
   };
 
-  const handleEventRegistrationAttempt = async (eventId: string) => {
+  const handleEventRegistrationAttempt = async (eventId: string, tShirtSize?: string) => {
     setRegistrationToast(null);
     if (!activeStudent) {
       const msg = '❌ Please sign in first to register for events.';
@@ -302,24 +357,28 @@ export default function StudentDashboard({
       return;
     }
 
-    const targetEvt = events.find(e => e.id === eventId);
+    const targetEvt = displayEventsList.find(e => e.id === eventId);
     const eventName = targetEvt ? targetEvt.title : 'Event';
     const isAlreadyRegistered = (activeStudent.registeredEventIds || []).includes(eventId);
 
-    if (!isAlreadyRegistered && targetEvt && (targetEvt.isRegistrationClosed || targetEvt.registrationClosed)) {
-      const msg = `❌ Cannot register: Registration for "${eventName}" is closed by the event coordinator.`;
+    if (!isAlreadyRegistered && targetEvt && isEventRegistrationClosed(targetEvt)) {
+      const msg = `❌ Cannot register: Registration for "${eventName}" is closed.`;
       setRegistrationToast({ type: 'error', message: msg });
-      alert(`⚠️ Cannot register: Registration for "${eventName}" is closed by the event coordinator.`);
+      alert(`⚠️ Cannot register: Registration for "${eventName}" is closed.`);
       return;
     }
 
     try {
       setIsRegisteringEventId(eventId);
-      await onToggleEventRegistration(activeStudent.registerNo, eventId);
+      await onToggleEventRegistration(activeStudent.registerNo, eventId, tShirtSize);
       if (isAlreadyRegistered) {
-        setRegistrationToast({ type: 'success', message: `✅ Successfully left ${eventName}.` });
+        if (tShirtSize && tShirtSize !== activeStudent.tShirtSize) {
+          setRegistrationToast({ type: 'success', message: `✅ Updated T-Shirt Size to ${tShirtSize} for ${eventName}!` });
+        } else {
+          setRegistrationToast({ type: 'success', message: `✅ Successfully left ${eventName}.` });
+        }
       } else {
-        setRegistrationToast({ type: 'success', message: `✅ Successfully registered for ${eventName}!` });
+        setRegistrationToast({ type: 'success', message: `🎉 Successfully registered for ${eventName}${tShirtSize ? ` (T-Shirt Size: ${tShirtSize})` : ''}!` });
       }
       setTimeout(() => {
         setRegistrationToast(null);
@@ -1384,7 +1443,7 @@ export default function StudentDashboard({
                 <h1 className="text-3xl md:text-4xl font-black text-white leading-none transform -rotate-1 italic">
                   Rock On, <span className="text-[#00D1FF] drop-shadow-[0_2px_8px_rgba(0,209,255,0.4)]">{activeStudent.name}</span>! 🎸
                 </h1>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-2 font-mono text-xs">
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-4 pt-2 font-mono text-xs">
                   <div>
                     <p className="text-slate-200 font-extrabold uppercase tracking-widest text-[9px]">REGISTER NO</p>
                     <p className="text-white font-black">{activeStudent.registerNo}</p>
@@ -1397,12 +1456,55 @@ export default function StudentDashboard({
                     <p className="text-slate-200 font-extrabold uppercase tracking-widest text-[9px]">EVENTS REGISTERED</p>
                     <p className="text-[#00D1FF] font-black">{activeStudent.registeredEventIds.length} Events</p>
                   </div>
+                  {/* Leaderboard rank removed as requested */}
+                  {/* T-Shirt Size — Only shown for Freshathon registrants */}
+                  {isStudentRegisteredForFreshathon && (
                   <div>
-                    <p className="text-slate-200 font-extrabold uppercase tracking-widest text-[9px]">OVERALL RANK</p>
-                    <p className="text-amber-400 font-black text-xs uppercase tracking-wider">
-                      {overallStudentRank ? `🏆 Rank #${overallStudentRank}` : 'Unranked'}
-                    </p>
+                    <p className="text-amber-300 font-extrabold uppercase tracking-widest text-[9px]">👕 T-SHIRT SIZE</p>
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <select
+                        value={activeStudent.tShirtSize || selectedTShirtSize || 'M'}
+                        onChange={(e) => {
+                          const newSize = e.target.value;
+                          setSelectedTShirtSize(newSize);
+                          const updated = { ...activeStudent, tShirtSize: newSize };
+                          onRegisterStudent(updated);
+                          setRegistrationToast({ type: 'success', message: `✅ Updated T-Shirt Size to ${newSize}!` });
+                        }}
+                        className="bg-[#1A032E] border border-amber-400/70 text-amber-300 font-extrabold rounded-lg px-2 py-0.5 text-xs focus:outline-none cursor-pointer hover:border-amber-300 transition-colors"
+                        title="Select and save your T-shirt size"
+                      >
+                        <option value="S">Small (S)</option>
+                        <option value="M">Medium (M)</option>
+                        <option value="L">Large (L)</option>
+                        <option value="XL">Extra Large (XL)</option>
+                        <option value="XXL">Double Extra Large (XXL)</option>
+                        <option value="3XL">Triple Extra Large (3XL)</option>
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedTShirtSize(activeStudent.tShirtSize || 'M');
+                          setShowTShirtModal(true);
+                        }}
+                        className="px-2 py-0.5 bg-amber-400/20 hover:bg-amber-400/30 text-amber-300 border border-amber-400/60 rounded-lg text-[10px] font-black cursor-pointer transition-colors"
+                        title="Click to open T-Shirt Size selection modal"
+                      >
+                        ✏️ Edit
+                      </button>
+                    </div>
                   </div>
+                  )}
+                </div>
+                </div>
+
+                <div className="mt-4 bg-gradient-to-r from-amber-500/10 via-orange-500/10 to-red-500/10 border border-amber-500/20 rounded-xl p-3.5 flex items-start gap-3 backdrop-blur-sm shadow-lg shadow-black/20">
+                  <div className="p-2 bg-amber-500/20 rounded-lg shrink-0 mt-0.5">
+                    <Award className="w-5 h-5 text-amber-400 animate-pulse" />
+                  </div>
+                  <p className="text-xs sm:text-sm font-semibold text-amber-100/90 leading-relaxed">
+                    The leaderboard is temporarily offline while the organizing committee verifies and updates final official scores. Please check back later.
+                  </p>
                 </div>
               </div>
 
@@ -1720,7 +1822,7 @@ export default function StudentDashboard({
 
               {/* 3D Responsive Grid: Registered events listed first, non-registered events below */}
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 font-sans">
-                {[...events]
+                {[...displayEventsList]
                   .filter((evt) => {
                     const query = studentEventSearch.toLowerCase().trim();
                     const matchesSearch = !query ||
@@ -1764,7 +1866,7 @@ export default function StudentDashboard({
                           <span className="px-2.5 py-1 bg-zinc-800 border border-zinc-700 text-zinc-400 text-[10px] font-bold rounded-lg uppercase tracking-wider">
                             Event Completed
                           </span>
-                        ) : (evt.isRegistrationClosed || evt.registrationClosed) && !isEventOver(evt) ? (
+                        ) : isEventRegistrationClosed(evt) ? (
                           <span className="px-2.5 py-1 bg-amber-500/20 border border-amber-500/40 text-amber-300 text-[10px] font-bold rounded-lg uppercase tracking-wider flex items-center gap-1">
                             <Lock className="w-3 h-3 text-amber-400" /> Registration Closed
                           </span>
@@ -2128,14 +2230,21 @@ export default function StudentDashboard({
       {/* Full Event Details Modal */}
       {selectedDetailEvent && (
         <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 animate-fadeIn">
-          <div className="relative max-w-2xl w-full max-h-[90vh] bg-[#1A032E] border-2 border-[#00D1FF] rounded-3xl p-6 shadow-2xl overflow-y-auto space-y-5">
+          <div className="relative max-w-2xl w-full max-h-[85vh] bg-[#1A032E] border-2 border-[#00D1FF] rounded-3xl p-6 shadow-2xl overflow-y-auto space-y-5">
             
-            {/* Modal Header */}
-            <div className="flex justify-between items-start border-b border-white/10 pb-4">
+            {/* Sticky Modal Header (Always visible close button) */}
+            <div className="sticky top-0 z-40 bg-[#1A032E] pt-1 pb-3 border-b border-white/10 flex justify-between items-start gap-3">
               <div>
-                <span className="text-[10px] font-black uppercase tracking-widest bg-[#00D1FF]/15 text-[#00D1FF] border border-[#00D1FF]/30 px-3 py-1 rounded-full">
-                  {selectedDetailEvent.hostDepartment}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-black uppercase tracking-widest bg-[#00D1FF]/15 text-[#00D1FF] border border-[#00D1FF]/30 px-3 py-1 rounded-full">
+                    {selectedDetailEvent.hostDepartment}
+                  </span>
+                  {(selectedDetailEvent.id === 'evt-freshathon-sprint' || selectedDetailEvent.title.toLowerCase().includes('freshathon')) && (
+                    <span className="text-[10px] font-black uppercase tracking-widest bg-amber-500/20 text-amber-300 border border-amber-400/50 px-3 py-1 rounded-full flex items-center gap-1">
+                      🏃 GRAND FINALE MARATHON
+                    </span>
+                  )}
+                </div>
                 <h2 className="text-2xl font-black text-white italic tracking-tight uppercase mt-2">
                   {selectedDetailEvent.title}
                 </h2>
@@ -2143,9 +2252,9 @@ export default function StudentDashboard({
               <button
                 type="button"
                 onClick={() => setSelectedDetailEvent(null)}
-                className="bg-black/60 border border-white/20 text-white hover:text-rose-400 p-2 rounded-xl transition-colors cursor-pointer text-xs font-bold"
+                className="bg-rose-600/90 hover:bg-rose-500 border border-white/30 text-white p-2 px-3 rounded-xl transition-colors cursor-pointer text-xs font-bold shrink-0 flex items-center gap-1 shadow-lg"
               >
-                ✕ Close
+                <span>✕ Close</span>
               </button>
             </div>
 
@@ -2225,10 +2334,49 @@ export default function StudentDashboard({
               </div>
             </div>
 
+            {/* T-Shirt Size Selection for Freshathon or relevant events */}
+            {(selectedDetailEvent.id === 'evt-freshathon-sprint' || selectedDetailEvent.title.toLowerCase().includes('freshathon')) && (
+              <div className="bg-[#0F011E] rounded-2xl p-4 border-2 border-amber-400/60 space-y-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-[11px] font-black uppercase text-amber-300 tracking-wider flex items-center gap-1.5">
+                    <span>👕 Select / Edit Marathon T-Shirt Size</span>
+                  </p>
+                  <span className="text-[10px] font-extrabold text-amber-200 bg-amber-500/20 px-2.5 py-0.5 rounded-full border border-amber-400/40">
+                    Includes Official T-Shirt
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  {['S', 'M', 'L', 'XL', 'XXL', '3XL'].map((sizeOption) => {
+                    const isSelected = (modalTShirtSize || activeStudent?.tShirtSize || 'M') === sizeOption;
+                    return (
+                      <button
+                        key={sizeOption}
+                        type="button"
+                        onClick={() => {
+                          setModalTShirtSize(sizeOption);
+                          if (activeStudent) {
+                            const updated = { ...activeStudent, tShirtSize: sizeOption };
+                            onRegisterStudent(updated);
+                          }
+                        }}
+                        className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer border ${
+                          isSelected
+                            ? 'bg-amber-400 text-black border-amber-300 shadow-[0_0_12px_rgba(245,158,11,0.5)] scale-105'
+                            : 'bg-[#1A032E] text-zinc-300 border-white/20 hover:border-amber-400/60'
+                        }`}
+                      >
+                        {sizeOption}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* Action Buttons */}
             {activeStudent && (() => {
               const isSelectedEventEnded = isEventOver(selectedDetailEvent);
-              const isRegClosed = Boolean(selectedDetailEvent.isRegistrationClosed || selectedDetailEvent.registrationClosed) && !isSelectedEventEnded;
+              const isRegClosed = isEventRegistrationClosed(selectedDetailEvent) && !isSelectedEventEnded;
               const isStudentRegistered = activeStudent.registeredEventIds.includes(selectedDetailEvent.id);
 
               return (
@@ -2274,24 +2422,41 @@ export default function StudentDashboard({
                         Registration Closed
                       </button>
                     ) : isStudentRegistered ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setUnverifiedAlert('');
-                          handleEventRegistrationAttempt(selectedDetailEvent.id);
-                        }}
-                        className="px-6 py-3 rounded-xl font-black text-xs uppercase tracking-wider shadow-lg cursor-pointer transition-all bg-rose-500/20 border-2 border-rose-500 text-rose-300 hover:bg-rose-500/30"
-                      >
-                        Leave Event
-                      </button>
+                      <div className="flex items-center gap-2">
+                        {(selectedDetailEvent.id === 'evt-freshathon-sprint' || selectedDetailEvent.title.toLowerCase().includes('freshathon')) && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setUnverifiedAlert('');
+                              handleEventRegistrationAttempt(selectedDetailEvent.id, modalTShirtSize || activeStudent.tShirtSize);
+                            }}
+                            className="px-4 py-3 rounded-xl font-black text-xs uppercase tracking-wider shadow-lg cursor-pointer transition-all bg-amber-400 text-black hover:bg-amber-300"
+                          >
+                            Update T-Shirt Size ({modalTShirtSize || activeStudent.tShirtSize || 'M'})
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setUnverifiedAlert('');
+                            handleEventRegistrationAttempt(selectedDetailEvent.id);
+                          }}
+                          className="px-5 py-3 rounded-xl font-black text-xs uppercase tracking-wider shadow-lg cursor-pointer transition-all bg-rose-500/20 border-2 border-rose-500 text-rose-300 hover:bg-rose-500/30"
+                        >
+                          Leave Event
+                        </button>
+                      </div>
                     ) : (
                       <button
                         type="button"
                         onClick={() => {
                           setUnverifiedAlert('');
-                          handleEventRegistrationAttempt(selectedDetailEvent.id);
+                          const sizeToSave = (selectedDetailEvent.id === 'evt-freshathon-sprint' || selectedDetailEvent.title.toLowerCase().includes('freshathon')) 
+                            ? (modalTShirtSize || activeStudent.tShirtSize || 'M')
+                            : undefined;
+                          handleEventRegistrationAttempt(selectedDetailEvent.id, sizeToSave);
                         }}
-                        className="px-6 py-3 rounded-xl font-black text-xs uppercase tracking-wider shadow-lg cursor-pointer transition-all bg-gradient-to-r from-[#FF007A] to-[#00D1FF] text-white hover:opacity-90 shadow-[#FF007A]/30"
+                        className="px-6 py-3 rounded-xl font-black text-xs uppercase tracking-wider shadow-lg cursor-pointer transition-all bg-gradient-to-r from-[#FF007A] to-[#00D1FF] text-white hover:opacity-90 shadow-[#FF007A]/30 flex items-center gap-1.5"
                       >
                         + Register For Event
                       </button>
@@ -2561,6 +2726,100 @@ export default function StudentDashboard({
           onRegisterStudent(updated);
         }}
       />
+
+      {/* MANDATORY T-SHIRT SIZE SELECTION & EDIT MODAL — Freshathon only */}
+      {(showTShirtModal || (activeStudent && isStudentRegisteredForFreshathon && (!activeStudent.tShirtSize || activeStudent.tShirtSize.trim() === ''))) && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-gradient-to-b from-[#1A032E] via-[#0F011E] to-[#05000A] border-2 border-amber-400 rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-[0_0_50px_rgba(251,191,36,0.35)] space-y-6 relative overflow-hidden font-sans">
+            
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-white/10 pb-4">
+              <div className="flex items-center gap-3 text-amber-400">
+                <div className="w-10 h-10 bg-amber-500/20 border border-amber-400/50 rounded-2xl flex items-center justify-center text-xl shrink-0">
+                  👕
+                </div>
+                <div>
+                  <span className="text-[10px] font-black uppercase tracking-widest bg-amber-400/20 text-amber-300 border border-amber-400/40 px-2 py-0.5 rounded">
+                    OFFICIAL MERCHANDISE SIZE
+                  </span>
+                  <h3 className="text-xl font-black text-white uppercase tracking-tight italic mt-1">
+                    Select Your T-Shirt Size
+                  </h3>
+                </div>
+              </div>
+              {activeStudent && activeStudent.tShirtSize && (
+                <button
+                  type="button"
+                  onClick={() => setShowTShirtModal(false)}
+                  className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 text-white font-bold flex items-center justify-center cursor-pointer"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+
+            <div className="space-y-3">
+              <p className="text-xs text-zinc-300 leading-relaxed font-medium">
+                Welcome <strong className="text-amber-300 font-extrabold">{activeStudent?.name}</strong>! All registered GCU students receive official event merchandise and Freshathon marathon T-shirts. Please select your size below:
+              </p>
+
+              {/* T-Shirt Size Cards */}
+              <div className="grid grid-cols-3 gap-2.5 pt-2">
+                {['S', 'M', 'L', 'XL', 'XXL', '3XL'].map((sizeOption) => {
+                  const isSelected = (selectedTShirtSize || activeStudent?.tShirtSize || 'M') === sizeOption;
+                  return (
+                    <button
+                      key={sizeOption}
+                      type="button"
+                      onClick={() => setSelectedTShirtSize(sizeOption)}
+                      className={`py-3 px-2 rounded-2xl font-black text-xs uppercase transition-all flex flex-col items-center justify-center gap-0.5 cursor-pointer border ${
+                        isSelected
+                          ? 'bg-amber-400 text-black border-amber-300 shadow-[0_0_15px_rgba(251,191,36,0.5)] scale-105'
+                          : 'bg-[#120124] text-zinc-300 border-white/10 hover:border-amber-400/50 hover:text-white'
+                      }`}
+                    >
+                      <span className="text-base font-black">{sizeOption}</span>
+                      <span className="text-[9px] font-mono text-zinc-400">
+                        {sizeOption === 'S' ? 'Small' : sizeOption === 'M' ? 'Medium' : sizeOption === 'L' ? 'Large' : sizeOption === 'XL' ? 'X-Large' : sizeOption === 'XXL' ? '2X-Large' : '3X-Large'}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Submit Action */}
+            <div className="space-y-2 pt-2 border-t border-white/10">
+              <button
+                type="button"
+                onClick={() => {
+                  const sizeToSave = selectedTShirtSize || 'M';
+                  if (activeStudent) {
+                    const updated = { ...activeStudent, tShirtSize: sizeToSave };
+                    onRegisterStudent(updated);
+                  }
+                  setShowTShirtModal(false);
+                  setRegistrationToast({ type: 'success', message: `🎉 T-Shirt Size saved as ${sizeToSave}!` });
+                }}
+                className="w-full py-3.5 bg-gradient-to-r from-amber-400 via-yellow-400 to-orange-500 hover:opacity-95 text-zinc-950 font-black text-xs uppercase tracking-wider rounded-xl shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer border border-white/20"
+              >
+                <CheckCircle2 className="w-4 h-4 text-zinc-950" />
+                <span>Save & Confirm T-Shirt Size</span>
+              </button>
+              {activeStudent && activeStudent.tShirtSize && (
+                <button
+                  type="button"
+                  onClick={() => setShowTShirtModal(false)}
+                  className="w-full py-2 bg-white/5 hover:bg-white/10 text-zinc-400 font-bold text-xs rounded-xl transition-all cursor-pointer"
+                >
+                  Cancel / Edit Later
+                </button>
+              )}
+            </div>
+
+          </div>
+        </div>
+      )}
 
     </div>
   );

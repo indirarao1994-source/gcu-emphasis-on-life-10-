@@ -7,7 +7,7 @@ import React, { useState, useRef } from 'react';
 import { 
   PlusCircle, Download, Upload, BarChart3, Mail, Award, 
   Calendar, MapPin, Sparkles, BookOpen, Clock, Phone, AlertCircle, CheckCircle2, UserCheck, UserPlus, FileSpreadsheet,
-  Edit3, Trash2, Megaphone, UserX, Trophy, Filter, Check, X, Users, Settings2, Search, Home, Printer, Bell
+  Edit3, Trash2, Megaphone, UserX, Trophy, Filter, Check, X, Users, Settings2, Search, Home, Printer, Bell, RotateCcw, RefreshCcw
 } from 'lucide-react';
 import { Event, Student, Score, MessageToCoordinator, FacultyCoordinator, Notification, Occasion, StudentMasterRecord, isMatchingEmail } from '../types';
 import { formatDateDDMMYYYY, formatDateRangeDDMMYYYY } from '../dateUtils';
@@ -17,11 +17,50 @@ import {
   exportScoreSheetIndividual, 
   exportScoreSheetsMultiple, 
   exportScoreSheetsAll, 
-  exportScoreSheetsTop100 
+  exportScoreSheetsTop100,
+  parseStudentUsnSheet,
+  StudentUsnUpdate,
+  RegisterNoCorrection,
+  downloadStudentsWithoutUsnSheet,
+  downloadMarksExcel
 } from './ExcelHelper';
 import { downloadStudentRegistrationsCSV, downloadLeaderboardCSV, downloadStudentSummaryWithEventCount } from './CSVHelper';
 import { dbSaveCoordinator, dbDeleteCoordinator } from '../firebase';
 import { OfficialScoreSheetModal } from './OfficialScoreSheetModal';
+
+const compressImage = (file: File, maxDim: number = 800): Promise<string> => {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let { width, height } = img;
+        if (width > maxDim || height > maxDim) {
+          if (width > height) {
+            height = (height / width) * maxDim;
+            width = maxDim;
+          } else {
+            width = (width / height) * maxDim;
+            height = maxDim;
+          }
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', 0.7));
+        } else {
+          resolve(e.target?.result as string);
+        }
+      };
+      img.onerror = () => resolve(e.target?.result as string);
+      img.src = e.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+  });
+};
 
 interface ConvenorDashboardProps {
   events: Event[];
@@ -47,9 +86,12 @@ interface ConvenorDashboardProps {
   onApproveCoordinator?: (facultyId: string, approve: boolean) => void;
   onDeleteCoordinator?: (facultyId: string) => void;
   onDeleteStudent?: (registerNo: string) => void;
+  onAssignStudentUsnNos?: (updates: StudentUsnUpdate[], corrections?: RegisterNoCorrection[]) => Promise<{ successCount: number; failedRows: string[] }>;
+  onCorrectStudentRegisterNos?: (corrections: RegisterNoCorrection[]) => Promise<{ successCount: number; failedRows: string[] }>;
   onRegisterCoordinator?: (coord: FacultyCoordinator, oldFacultyId?: string) => void;
   onUpdateConvenorSecurity?: (newPassword: string, newEmail?: string) => void;
   onGoToLanding?: () => void;
+  onUpdateScores?: (allScores: Score[], updatedScores: Score[]) => Promise<void>;
 }
 
 export default function ConvenorDashboard({
@@ -76,12 +118,15 @@ export default function ConvenorDashboard({
   onApproveCoordinator,
   onDeleteCoordinator,
   onDeleteStudent,
+  onAssignStudentUsnNos,
+  onCorrectStudentRegisterNos,
   onRegisterCoordinator,
   onUpdateConvenorSecurity,
-  onGoToLanding
+  onGoToLanding,
+  onUpdateScores
 }: ConvenorDashboardProps) {
   // Navigation inside Convenor Dashboard
-  type SubTab = 'analytics' | 'events' | 'coordinators' | 'messages' | 'leaderboard' | 'scoresheets' | 'capaudit' | 'security';
+  type SubTab = 'analytics' | 'events' | 'coordinators' | 'messages' | 'leaderboard' | 'scoresheets' | 'capaudit' | 'overallreport' | 'security';
   const [activeSubTab, setActiveSubTab] = useState<SubTab>('analytics');
 
   // Score Sheet Selection States
@@ -122,6 +167,24 @@ export default function ConvenorDashboard({
   // Pending faculty coordinators check
   const pendingCoordinators = facultyCoordinators.filter(c => !c.isApproved);
 
+  // --- MEMOIZED DERIVATIONS (PERFORMANCE OPTIMIZATIONS) ---
+  const publishedEvents = React.useMemo(() => events.filter(e => e.resultsPublished), [events]);
+  const reportedEvents = React.useMemo(() => events.filter(e => e.reportedToConvenor || e.isCompleted || e.resultsPublished), [events]);
+  const pendingApprovalEvents = React.useMemo(() => events.filter(e => e.reportedToConvenor && !e.resultsPublished), [events]);
+
+  const studentUsnLookupMaps = React.useMemo(() => {
+    const regToUsn = new Map<string, string>();
+    const emailToUsn = new Map<string, string>();
+    students.forEach(s => {
+      if (s.usnNo) {
+        if (s.registerNo) regToUsn.set(s.registerNo.trim().toUpperCase(), s.usnNo.trim().toUpperCase());
+        if (s.email) emailToUsn.set(s.email.trim().toLowerCase(), s.usnNo.trim().toUpperCase());
+      }
+    });
+    return { regToUsn, emailToUsn };
+  }, [students]);
+  // ---------------------------------------------------------
+
   // Edit Event State
   const [editingEvent, setEditingEvent] = useState<Event | null>(null);
 
@@ -129,11 +192,31 @@ export default function ConvenorDashboard({
   const [publishConfirmModalEvent, setPublishConfirmModalEvent] = useState<Event | null>(null);
   const [selectedStudentForBreakdown, setSelectedStudentForBreakdown] = useState<Student | null>(null);
 
-  const handlePublishEventResults = (eventToPublish: Event) => {
+  const handlePublishEventResults = async (eventToPublish: Event) => {
+    // Process pending score updates first
+    if (onUpdateScores && eventToPublish.hasPendingUpdates) {
+      const eventScores = scores.filter(s => s.eventId === eventToPublish.id && s.pendingUpdate);
+      if (eventScores.length > 0) {
+        const updatedScores = eventScores.map(score => {
+          const { pendingUpdate, ...rest } = score;
+          return {
+            ...rest,
+            ...pendingUpdate,
+            scoreEntered: true,
+            pendingUpdate: undefined
+          };
+        });
+        
+        const remainingScores = scores.filter(s => !updatedScores.find(u => u.id === s.id));
+        await onUpdateScores([...remainingScores, ...updatedScores], updatedScores);
+      }
+    }
+
     const updatedEvent: Event = {
       ...eventToPublish,
       resultsPublished: true,
-      resultsPublishedAt: new Date().toISOString()
+      resultsPublishedAt: new Date().toISOString(),
+      hasPendingUpdates: false
     };
 
     onUpdateEvent(updatedEvent);
@@ -150,6 +233,24 @@ export default function ConvenorDashboard({
       });
     }
 
+    setPublishConfirmModalEvent(null);
+  };
+
+  /**
+   * Reset completion & reporting status for a single event so coordinator can re-open, edit, end, and re-submit.
+   */
+  const handleResetEvent = (evt: Event) => {
+    if (!confirm(`Are you sure you want to reset "${evt.title}"?\n\nThis will reset its completion and reporting status so Faculty Coordinator (${evt.coordinatorName}) can re-open the event, edit marks in the grading sheet, end the event, and re-send the report to Convenor.`)) {
+      return;
+    }
+    const updatedEvent: Event = {
+      ...evt,
+      isCompleted: false,
+      reportedToConvenor: false,
+      resultsPublished: false,
+      resultsPublishedAt: undefined
+    };
+    onUpdateEvent(updatedEvent);
     setPublishConfirmModalEvent(null);
   };
 
@@ -703,9 +804,8 @@ export default function ConvenorDashboard({
     return venues.map(v => {
       const venueEvents = events.filter(e => e.venue === v);
       const venueRegCount = students.filter(s => 
-        s.registeredEventIds.some(eid => venueEvents.some(ve => ve.id === eid))
+        s.registeredEventIds?.some(eid => venueEvents.some(ve => ve.id === eid))
       ).length;
-
       return {
         venue: v,
         eventCount: venueEvents.length,
@@ -719,6 +819,7 @@ export default function ConvenorDashboard({
   // Sort students by aggregate total scores across all events registered
   interface LeaderboardRow {
     rank: number;
+    usnNo?: string;
     registerNo: string;
     name: string;
     email: string;
@@ -728,58 +829,115 @@ export default function ConvenorDashboard({
     totalScore: number;
   }
 
-  const computeLeaderboard = (): LeaderboardRow[] => {
-    const rows: LeaderboardRow[] = students.map(student => {
-      // Find all score records for this student
-      const studentScoreRecs = scores.filter(s => s.studentRegisterNo === student.registerNo);
+  const leaderboardRows = React.useMemo(() => {
+    const map = new Map<string, {
+      usnNo?: string;
+      registerNo: string;
+      name: string;
+      email: string;
+      mobile: string;
+      registeredEventIds: Set<string>;
+    }>();
+
+    const { regToUsn, emailToUsn } = studentUsnLookupMaps;
+
+    const getCanonicalKey = (reg?: string, usn?: string, email?: string): string => {
+      const cleanUsn = (usn || '').trim().toUpperCase();
+      if (cleanUsn) return `USN:${cleanUsn}`;
+      const cleanReg = (reg || '').trim().toUpperCase();
+      const cleanEmail = (email || '').trim().toLowerCase();
       
-      // registered events names
-      const registeredEventNames = student.registeredEventIds.map(eid => {
+      const matchedUsn = (cleanReg && regToUsn.get(cleanReg)) || (cleanEmail && emailToUsn.get(cleanEmail));
+      if (matchedUsn) return `USN:${matchedUsn}`;
+      
+      if (cleanReg) return `REG:${cleanReg}`;
+      if (cleanEmail) return `EMAIL:${cleanEmail}`;
+      return `KEY:${reg || email || 'unknown'}`;
+    };
+
+    students.forEach(s => {
+      const key = getCanonicalKey(s.registerNo, s.usnNo, s.email);
+      const cleanReg = (s.registerNo || '').trim().toUpperCase();
+      const cleanUsn = (s.usnNo || '').trim().toUpperCase();
+
+      const existing = map.get(key);
+      if (existing) {
+        if (cleanUsn && !existing.usnNo) existing.usnNo = cleanUsn;
+        if (cleanReg && (cleanReg === cleanUsn || existing.registerNo.startsWith('GCU-TEMP-'))) {
+          existing.registerNo = cleanReg;
+        }
+        if (s.name && (!existing.name || existing.name.startsWith('GCU-TEMP-') || existing.name.startsWith('Student'))) {
+          existing.name = s.name;
+        }
+        if (s.email && !existing.email) existing.email = s.email;
+        if (s.mobile && !existing.mobile) existing.mobile = s.mobile;
+        (s.registeredEventIds || []).forEach(eid => existing.registeredEventIds.add(eid));
+      } else {
+        map.set(key, {
+          usnNo: cleanUsn || (key.startsWith('USN:') ? key.substring(4) : undefined),
+          registerNo: cleanReg || s.name || '',
+          name: s.name || s.registerNo || 'Student',
+          email: s.email || '',
+          mobile: s.mobile || '',
+          registeredEventIds: new Set<string>(s.registeredEventIds || [])
+        });
+      }
+    });
+
+    const publishedEventIds = new Set(publishedEvents.map(e => e.id));
+
+    const rows: LeaderboardRow[] = Array.from(map.values()).map(std => {
+      const studentScores = scores.filter(sc => {
+        const scReg = (sc.studentRegisterNo || '').trim().toUpperCase();
+        const scUsn = (sc.usnNo || '').trim().toUpperCase();
+        const scEmail = ((sc as any).studentEmail || (sc as any).email || '').trim().toLowerCase();
+
+        if (std.usnNo && scUsn && scUsn === std.usnNo.toUpperCase()) return true;
+        if (std.usnNo && scReg && scReg === std.usnNo.toUpperCase()) return true;
+        if (scReg && scReg === std.registerNo) return true;
+        if (scEmail && scEmail === std.email.trim().toLowerCase()) return true;
+        return false;
+      });
+
+      const registeredEventNames = Array.from(std.registeredEventIds).map(eid => {
         const ev = events.find(e => e.id === eid);
         return ev ? ev.title.split(' - ')[0] : 'Event';
       });
 
-      // won events names
-      const wonEventNames = studentScoreRecs
-        .filter(s => s.isWinner)
-        .map(s => s.eventTitle.split(' - ')[0]);
+      const wonEventNames = studentScores.filter(s => s.isWinner).map(s => s.eventTitle.split(' - ')[0]);
 
-      // total score is sum of total scores of their registered events
-      // wait, what if they don't have score entered yet? They still get their 10 base points!
-      // Let's sum basePoints + performanceScore for each registered event in the scores array
-      // Wait, what if a score record doesn't exist? (Students registered but no score object yet).
-      // They should get 10 points! So we count 10 base points for each event in registeredEventIds
       let totalSum = 0;
-      student.registeredEventIds.forEach(eid => {
-        const rec = studentScoreRecs.find(s => s.eventId === eid);
+      std.registeredEventIds.forEach(eid => {
+        if (!publishedEventIds.has(eid)) {
+           totalSum += 5; // Default 5 registration points if not published
+           return;
+        }
+        const rec = studentScores.find(s => s.eventId === eid);
         if (rec) {
-          totalSum += rec.totalScore;
+          totalSum += (typeof rec.totalScore === 'number' ? rec.totalScore : (rec.registrationPoints || 5));
         } else {
-          totalSum += 5; // Default registration points (5)
+          totalSum += 0; // Published but absent -> 0 points
         }
       });
 
       return {
         rank: 0,
-        registerNo: student.registerNo,
-        name: student.name,
-        email: student.email,
-        mobile: student.mobile,
+        usnNo: std.usnNo,
+        registerNo: std.registerNo,
+        name: std.name,
+        email: std.email,
+        mobile: std.mobile,
         eventsRegistered: registeredEventNames,
         eventsWon: wonEventNames,
         totalScore: totalSum
       };
     });
 
-    // Sort descending by total score, then by number of events
     rows.sort((a, b) => {
-      if (b.totalScore !== a.totalScore) {
-        return b.totalScore - a.totalScore;
-      }
+      if (b.totalScore !== a.totalScore) return b.totalScore - a.totalScore;
       return b.eventsRegistered.length - a.eventsRegistered.length;
     });
 
-    // Calculate ranks (dense rank for ties)
     let currentRank = 1;
     for (let i = 0; i < rows.length; i++) {
       if (i > 0 && rows[i].totalScore < rows[i - 1].totalScore) {
@@ -788,10 +946,8 @@ export default function ConvenorDashboard({
       rows[i].rank = currentRank;
     }
 
-    return rows.slice(0, topperCount);
-  };
-
-  const leaderboardRows = computeLeaderboard();
+    return rows;
+  }, [students, scores, publishedEvents, events, studentUsnLookupMaps]);
 
   return (
     <div className="space-y-8 animate-fadeIn">
@@ -821,7 +977,9 @@ export default function ConvenorDashboard({
       </div>
 
       {/* PENDING APPROVAL NOTIFICATION BANNER */}
-      {events.filter(e => e.reportedToConvenor && !e.resultsPublished).length > 0 && (
+      {events.filter(e => e.hasPendingUpdates || (e.reportedToConvenor && !e.resultsPublished)).length > 0 && (() => {
+        const pendingEvents = events.filter(e => e.hasPendingUpdates || (e.reportedToConvenor && !e.resultsPublished));
+        return (
         <div className="bg-gradient-to-r from-amber-950 via-slate-900 to-orange-950 border-2 border-amber-500 rounded-2xl p-4 shadow-2xl flex flex-col md:flex-row items-center justify-between gap-4 animate-pulse">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 bg-amber-500/20 border border-amber-500/40 rounded-xl flex items-center justify-center text-amber-400 shrink-0">
@@ -829,21 +987,23 @@ export default function ConvenorDashboard({
             </div>
             <div>
               <h4 className="text-sm font-black text-amber-300 uppercase tracking-wider">
-                📢 {events.filter(e => e.reportedToConvenor && !e.resultsPublished).length} Event(s) Completed & Reported by Faculty Coordinator
+                📢 {pendingEvents.length} Event(s) Require Convenor Approval
               </h4>
               <p className="text-xs text-zinc-300">
-                Faculty coordinators have submitted final evaluation marks. Review the student marks and click "Yes Update Results" to approve and update the official Leaderboard.
+                Faculty coordinators have submitted or updated final evaluation marks. Review the student marks and click "Yes Update Results" / "Approve Updates" to publish them to the official Leaderboard.
               </p>
             </div>
           </div>
           <button
             type="button"
             onClick={() => {
-              const pending = events.filter(e => e.reportedToConvenor && !e.resultsPublished);
-              if (pending.length === 1) {
-                setPublishConfirmModalEvent(pending[0]);
+              if (pendingEvents.length === 1) {
+                setPublishConfirmModalEvent(pendingEvents[0]);
               } else {
-                setActiveSubTab('events');
+                setActiveSubTab('leaderboard');
+                setTimeout(() => {
+                  document.getElementById('publishing-controls')?.scrollIntoView({ behavior: 'smooth' });
+                }, 100);
               }
             }}
             className="px-4 py-2.5 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white font-black text-xs uppercase tracking-wider rounded-xl shadow-lg transition-all cursor-pointer border border-emerald-300 shrink-0 flex items-center gap-1.5"
@@ -852,7 +1012,8 @@ export default function ConvenorDashboard({
             <span>Review & Update Results</span>
           </button>
         </div>
-      )}
+        );
+      })()}
 
       {/* Convenor Banner */}
       <div className="bg-gradient-to-r from-[#2E004F]/60 via-[#1A032E] to-[#0F011E] border-2 border-[#FF007A] rounded-3xl p-6 shadow-xl flex flex-col md:flex-row items-center justify-between gap-6 relative overflow-hidden">
@@ -956,6 +1117,18 @@ export default function ConvenorDashboard({
           >
             <UserCheck className="w-4 h-4 text-amber-400" />
             <span>Master Data & Cap Audit</span>
+          </button>
+
+          <button
+            onClick={() => setActiveSubTab('overallreport')}
+            className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+              activeSubTab === 'overallreport' 
+                ? 'bg-[#FF007A] text-white font-black shadow-lg shadow-[#FF007A]/25' 
+                : 'bg-[#1A032E] border border-white/10 text-zinc-300 hover:text-white hover:border-[#FF007A]/30'
+            }`}
+          >
+            <BarChart3 className="w-4 h-4 text-emerald-400" />
+            <span>Overall Report</span>
           </button>
 
           <button
@@ -2061,7 +2234,7 @@ export default function ConvenorDashboard({
           </div>
 
           {/* EVENT APPROVAL & PUBLISHING STATUS CONTROL PANEL */}
-          <div className="bg-[#0F011E] border border-white/10 rounded-2xl p-4 space-y-3">
+          <div id="publishing-controls" className="bg-[#0F011E] border border-white/10 rounded-2xl p-4 space-y-3">
             <h4 className="text-xs font-black uppercase text-amber-300 tracking-wider flex items-center gap-2">
               <Sparkles className="w-4 h-4 text-amber-400" />
               Event Results Publishing Controls (Convenor Approval)
@@ -2070,17 +2243,64 @@ export default function ConvenorDashboard({
               Leaderboard rankings reflect ONLY events approved and published by Convenor. Click <strong>"Yes Update Results"</strong> on any completed event to publish its marks to the live Leaderboard.
             </p>
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 pt-2">
-              {events.map((evt) => (
+              {[...events].sort((a, b) => {
+                const aPending = a.hasPendingUpdates || (a.reportedToConvenor && !a.resultsPublished) ? 1 : 0;
+                const bPending = b.hasPendingUpdates || (b.reportedToConvenor && !b.resultsPublished) ? 1 : 0;
+                if (aPending !== bPending) return bPending - aPending;
+                return a.title.localeCompare(b.title);
+              }).map((evt) => (
                 <div key={evt.id} className="bg-[#1A032E] border border-white/10 rounded-xl p-3 flex flex-col justify-between gap-2">
                   <div>
-                    <p className="text-xs font-black text-white truncate">{evt.title}</p>
+                    <div className="flex items-center justify-between gap-1 mb-1">
+                      <span className="text-[10px] font-mono text-cyan-300 truncate max-w-[150px]">{evt.hostDepartment}</span>
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-white/10 text-zinc-300 font-mono">
+                        {scores.filter(sc => sc.eventId === evt.id || (sc.eventTitle && evt.title && sc.eventTitle.trim().toLowerCase() === evt.title.trim().toLowerCase())).length} Scores
+                      </span>
+                    </div>
+                    <p className="text-xs font-black text-white truncate" title={evt.title}>{evt.title}</p>
                     <p className="text-[10px] text-zinc-400">{evt.coordinatorName}</p>
                   </div>
-                  <div className="flex items-center justify-between gap-2 pt-1 border-t border-white/5">
+                  
+                  <div className="flex flex-col gap-1.5 pt-1.5 border-t border-white/10">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const eventStudents = students.filter(s => s.registeredEventIds?.includes(evt.id));
+                        const eventScores = scores.filter(sc => sc.eventId === evt.id || (sc.eventTitle && evt.title && sc.eventTitle.trim().toLowerCase() === evt.title.trim().toLowerCase()));
+                        downloadMarksExcel(evt, eventStudents, eventScores, activeOccasion?.title || 'Fresherism 2026');
+                      }}
+                      className="w-full text-[10px] px-2.5 py-1 bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-400/30 text-cyan-300 rounded-lg font-bold flex items-center justify-center gap-1 cursor-pointer transition-all"
+                      title="Download official score sheet for this event"
+                    >
+                      <Download className="w-3 h-3" />
+                      <span>Download Scores</span>
+                    </button>
+
+                    <div className="flex items-center justify-between gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleResetEvent(evt)}
+                        className="text-[10px] px-2 py-1 bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 rounded-lg font-bold flex items-center gap-1 cursor-pointer transition-all border border-rose-400/30 shrink-0"
+                        title="Reset event completion so coordinator can edit and re-send."
+                      >
+                        <RefreshCcw className="w-3 h-3" />
+                        <span>Reset</span>
+                      </button>
                     {evt.resultsPublished ? (
-                      <span className="text-[10px] px-2.5 py-1 bg-emerald-500/20 text-emerald-300 rounded-lg font-bold flex items-center gap-1">
-                        <CheckCircle2 className="w-3 h-3 text-emerald-400" /> Published
-                      </span>
+                      evt.hasPendingUpdates ? (
+                        <button
+                          type="button"
+                          onClick={() => setPublishConfirmModalEvent(evt)}
+                          className="w-full text-[10px] px-3 py-1.5 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-white font-black rounded-lg transition-all cursor-pointer border border-amber-300 flex items-center justify-center gap-1 shadow-md animate-pulse"
+                        >
+                          <CheckCircle2 className="w-3 h-3" />
+                          <span>Approve Updates</span>
+                        </button>
+                      ) : (
+                        <span className="text-[10px] px-2.5 py-1 bg-emerald-500/20 text-emerald-300 rounded-lg font-bold flex items-center gap-1">
+                          <CheckCircle2 className="w-3 h-3 text-emerald-400" /> Published
+                        </span>
+                      )
                     ) : evt.reportedToConvenor ? (
                       <button
                         type="button"
@@ -2100,6 +2320,7 @@ export default function ConvenorDashboard({
                         Publish Results
                       </button>
                     )}
+                    </div>
                   </div>
                 </div>
               ))}
@@ -2126,90 +2347,49 @@ export default function ConvenorDashboard({
                     </td>
                   </tr>
                 ) : (
-                  (() => {
-                    const publishedEventIds = new Set(
-                      events.filter(e => e.resultsPublished).map(e => e.id)
-                    );
-
-                    return students
-                      .filter(student => student.registeredEventIds && student.registeredEventIds.length > 0)
-                      .map(student => {
-                        let total = 0;
-                        const studentScores = scores.filter(
-                          s => s.studentRegisterNo === student.registerNo && publishedEventIds.has(s.eventId)
-                        );
-
-                        student.registeredEventIds.forEach(eid => {
-                          const isPublished = publishedEventIds.has(eid);
-                          if (isPublished) {
-                            const scoreRecord = scores.find(
-                              sc => sc.studentRegisterNo === student.registerNo && sc.eventId === eid
-                            );
-
-                            if (scoreRecord) {
-                              const isParticipated = Boolean(
-                                scoreRecord.participated || 
-                                (scoreRecord.participationPoints ?? 0) > 0 || 
-                                (scoreRecord.eventScore ?? 0) > 0 || 
-                                scoreRecord.scoreEntered
-                              );
-
-                              if (isParticipated) {
-                                const regPts = scoreRecord.registrationPoints ?? 5;
-                                const partPts = scoreRecord.participationPoints || 15;
-                                const evScore = scoreRecord.eventScore ?? scoreRecord.performanceScore ?? 0;
-                                total += (typeof scoreRecord.totalScore === 'number' && scoreRecord.totalScore > 0 ? scoreRecord.totalScore : (regPts + partPts + evScore));
-                              } else {
-                                total += 0; // Absent / Not participated in published event -> 0 points
-                              }
-                            } else {
-                              total += 0; // Published event with no score record -> 0 points
-                            }
-                          } else {
-                            total += 5; // Upcoming / pending event -> 5 registration points
-                          }
-                        });
-
-                        const wins = studentScores.filter(s => s.isWinner).length;
-                        return { student, total, wins, studentScores };
-                      })
-                      .sort((a, b) => b.total - a.total || b.wins - a.wins)
-                      .slice(0, topperCount)
-                      .map((item, index) => (
-                        <tr 
-                          key={item.student.registerNo}
-                          className="border-b border-white/5 hover:bg-white/5 transition-all"
+                  leaderboardRows.slice(0, topperCount).map((item, index) => (
+                    <tr 
+                      key={item.usnNo || item.registerNo}
+                      className="border-b border-white/5 hover:bg-white/5 transition-all"
+                    >
+                      <td className="py-4 px-2 text-center font-black text-sm">
+                        <span className={`inline-flex items-center justify-center w-7 h-7 rounded-full font-mono text-xs ${
+                          index === 0 ? 'bg-amber-400 text-black font-black' :
+                          index === 1 ? 'bg-slate-300 text-black font-black' :
+                          index === 2 ? 'bg-amber-700 text-white font-black' : 'bg-white/10 text-zinc-300'
+                        }`}>
+                          {index + 1}
+                        </span>
+                      </td>
+                      <td className="py-4 px-3">
+                        <p className="text-white font-bold text-sm">{item.name}</p>
+                        <p className="text-[10px] text-zinc-400 font-mono mt-0.5">
+                          {item.usnNo ? (
+                             <span className="text-cyan-300 font-bold">{item.usnNo}</span>
+                          ) : (
+                             item.registerNo
+                          )} | {item.email}
+                        </p>
+                      </td>
+                      <td className="py-4 px-3 text-zinc-300">({item.eventsRegistered.length} Events)</td>
+                      <td className="py-4 px-3 font-mono text-xs text-cyan-300">OMR Campus</td>
+                      <td className="py-4 px-3 text-center font-bold text-amber-400">{item.eventsWon.length > 0 ? `🏆 ${item.eventsWon.length} Wins` : '-'}</td>
+                      <td className="py-4 px-3 text-center font-mono font-black text-sm text-[#FF007A]">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const std = students.find(s => s.registerNo === item.registerNo || (item.usnNo && s.usnNo === item.usnNo));
+                            if (std) setSelectedStudentForBreakdown(std);
+                          }}
+                          className="px-2.5 py-1 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-amber-300 hover:text-amber-200 transition-all cursor-pointer font-bold inline-flex items-center gap-1.5"
+                          title="Click to view detailed points breakdown per event"
                         >
-                          <td className="py-4 px-2 text-center font-black text-sm">
-                            <span className={`inline-flex items-center justify-center w-7 h-7 rounded-full font-mono text-xs ${
-                              index === 0 ? 'bg-amber-400 text-black font-black' :
-                              index === 1 ? 'bg-slate-300 text-black font-black' :
-                              index === 2 ? 'bg-amber-700 text-white font-black' : 'bg-white/10 text-zinc-300'
-                            }`}>
-                              {index + 1}
-                            </span>
-                          </td>
-                          <td className="py-4 px-3">
-                            <p className="text-white font-bold text-sm">{item.student.name}</p>
-                            <p className="text-[10px] text-zinc-400 font-mono mt-0.5">{item.student.registerNo} | {item.student.email}</p>
-                          </td>
-                          <td className="py-4 px-3 text-zinc-300">{item.student.department} ({item.student.school})</td>
-                          <td className="py-4 px-3 font-mono text-xs text-cyan-300">OMR Campus</td>
-                          <td className="py-4 px-3 text-center font-bold text-amber-400">{item.wins > 0 ? `🏆 ${item.wins} Wins` : '-'}</td>
-                          <td className="py-4 px-3 text-center font-mono font-black text-sm text-[#FF007A]">
-                            <button
-                              type="button"
-                              onClick={() => setSelectedStudentForBreakdown(item.student)}
-                              className="px-2.5 py-1 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-amber-300 hover:text-amber-200 transition-all cursor-pointer font-bold inline-flex items-center gap-1.5"
-                              title="Click to view detailed points breakdown per event"
-                            >
-                              <span>{item.total} Pts</span>
-                              <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                            </button>
-                          </td>
-                        </tr>
-                      ));
-                  })()
+                          <span>{item.totalScore} Pts</span>
+                          <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))
                 )}
               </tbody>
             </table>
@@ -2489,16 +2669,36 @@ export default function ConvenorDashboard({
               </p>
 
               {/* Master student count indicator */}
-              <div className="p-4 bg-[#0F011E] rounded-2xl border border-purple-500/30 flex items-center justify-between">
-                <div>
-                  <p className="text-[10px] text-zinc-400 font-mono uppercase">Master Roster Total</p>
-                  <p className="text-xl font-extrabold text-amber-300">
-                    {activeOccasion?.masterStudents?.length || 0} Eligible Students Uploaded
-                  </p>
+              <div className="p-4 bg-[#0F011E] rounded-2xl border border-purple-500/30 flex flex-col gap-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-[10px] text-zinc-400 font-mono uppercase">Master Roster Total</p>
+                    <p className="text-xl font-extrabold text-amber-300">
+                      {activeOccasion?.masterStudents?.length || 0} Eligible Students Uploaded
+                    </p>
+                  </div>
+                  <span className="px-3 py-1 bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded-xl text-xs font-bold">
+                    Cap Limit: {activeOccasion?.capLimit || 3} Events
+                  </span>
                 </div>
-                <span className="px-3 py-1 bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded-xl text-xs font-bold">
-                  Cap Limit: {activeOccasion?.capLimit || 3} Events
-                </span>
+                
+                <div className="pt-3 border-t border-white/5">
+                  <button
+                    onClick={() => {
+                      const csvData = downloadStudentSummaryWithEventCount(students, events, scores);
+                      const link = document.createElement('a');
+                      link.href = csvData;
+                      link.download = `GCU_Unique_Student_List_${new Date().toISOString().split('T')[0]}.csv`;
+                      document.body.appendChild(link);
+                      link.click();
+                      document.body.removeChild(link);
+                    }}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/50 rounded-xl text-sm font-bold transition-colors"
+                  >
+                    <Download className="w-4 h-4" />
+                    Download Unique Student List
+                  </button>
+                </div>
               </div>
 
               <div className="space-y-3">
@@ -2557,6 +2757,55 @@ export default function ConvenorDashboard({
               </button>
             </div>
 
+            {/* Official USN Excel Upload Section */}
+            <div className="bg-[#1A032E] border border-blue-500/40 rounded-3xl p-6 shadow-xl space-y-4">
+              <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-3">
+                <h3 className="text-sm font-black text-white uppercase tracking-wider flex items-center gap-2">
+                  <FileSpreadsheet className="w-4 h-4 text-blue-400" />
+                  Update Official USN Numbers
+                </h3>
+              </div>
+              <p className="text-xs text-zinc-300">
+                Download the registered students list, fill the "USN NO" column in the Excel file, and upload it back here to update all student records.
+              </p>
+              
+              <div className="space-y-4">
+                <button 
+                  type="button"
+                  onClick={() => downloadStudentsWithoutUsnSheet(students, false)}
+                  className="w-full py-3 bg-blue-500/20 text-blue-300 hover:bg-blue-500/30 border border-blue-500/30 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2"
+                >
+                  <Download className="w-4 h-4" />
+                  Step 1: Download Registered Students List
+                </button>
+                
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-zinc-400 block">Step 2: Upload Filled Excel Sheet</label>
+                  <input
+                    type="file"
+                    accept=".xlsx, .xls"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      try {
+                        const { updates, corrections } = await parseStudentUsnSheet(file);
+                        if (updates.length > 0 && onAssignStudentUsnNos) {
+                          const result = await onAssignStudentUsnNos(updates, corrections);
+                          alert(`Successfully mapped ${result.successCount} USN records!`);
+                        } else {
+                          alert('No valid USN updates found in the uploaded file.');
+                        }
+                      } catch (error: any) {
+                        alert(`Error parsing Excel file: ${error.message}`);
+                      }
+                      e.target.value = ''; // Reset input
+                    }}
+                    className="w-full text-xs text-blue-300 bg-[#0F011E] p-3 rounded-xl border border-blue-500/30"
+                  />
+                </div>
+              </div>
+            </div>
+
             {/* 2. Certificate Background Template Settings */}
             <div className="bg-[#1A032E] border border-white/10 rounded-3xl p-6 shadow-xl space-y-4">
               <div className="flex items-center gap-2 text-pink-400 border-b border-white/10 pb-3">
@@ -2589,14 +2838,11 @@ export default function ConvenorDashboard({
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     if (file) {
-                      const reader = new FileReader();
-                      reader.onload = (evt) => {
-                        const dataUrl = evt.target?.result as string;
+                      compressImage(file).then(dataUrl => {
                         if (dataUrl && onUpdateOccasionCertificate) {
                           onUpdateOccasionCertificate(dataUrl);
                         }
-                      };
-                      reader.readAsDataURL(file);
+                      });
                     }
                   }}
                   className="w-full text-xs text-zinc-300 bg-[#0F011E] p-2.5 rounded-xl border border-white/10"
@@ -2754,6 +3000,65 @@ export default function ConvenorDashboard({
                 </div>
               );
             })()}
+          </div>
+        </div>
+      )}
+
+      {/* ----------------------------------------------------------------- */}
+      {/* SUBTAB: OVERALL REPORT */}
+      {/* ----------------------------------------------------------------- */}
+      {activeSubTab === 'overallreport' && (
+        <div className="bg-[#1A032E] border border-white/10 rounded-3xl p-6 sm:p-8 space-y-6">
+          <div className="border-b border-white/10 pb-4 flex items-center justify-between">
+            <h2 className="text-xl sm:text-2xl font-black text-white italic uppercase tracking-wider flex items-center gap-3">
+              <BarChart3 className="w-6 h-6 text-[#FF007A]" />
+              Events Overall Report
+            </h2>
+          </div>
+
+          <div className="overflow-x-auto bg-[#0b0014]/50 rounded-2xl border border-white/5">
+            <table className="w-full text-left text-sm text-zinc-300">
+              <thead className="text-xs uppercase bg-[#120224] text-zinc-400 border-b border-white/10">
+                <tr>
+                  <th className="px-6 py-4 font-black">S.No</th>
+                  <th className="px-6 py-4 font-black">Title of the Event</th>
+                  <th className="px-6 py-4 font-black">Date of the Event</th>
+                  <th className="px-6 py-4 font-black text-center">Scores Declared (Yes/No)</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/5">
+                {events.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="px-6 py-8 text-center text-zinc-500 italic">
+                      No events registered yet.
+                    </td>
+                  </tr>
+                ) : (
+                  events.map((event, idx) => {
+                    const isDeclared = event.resultsPublished;
+                    
+                    return (
+                      <tr key={event.id} className="hover:bg-white/5 transition-colors">
+                        <td className="px-6 py-4 whitespace-nowrap font-mono">{idx + 1}</td>
+                        <td className="px-6 py-4 font-bold text-white">{event.title}</td>
+                        <td className="px-6 py-4">{event.date}</td>
+                        <td className="px-6 py-4 text-center font-black">
+                          {isDeclared ? (
+                            <span className="inline-block px-3 py-1 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-400">
+                              Yes
+                            </span>
+                          ) : (
+                            <span className="inline-block px-3 py-1 rounded-full bg-red-500/20 border border-red-500/40 text-red-400">
+                              No
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
@@ -3028,9 +3333,7 @@ export default function ConvenorDashboard({
                       onChange={(e) => {
                         const file = e.target.files?.[0];
                         if (file) {
-                          const reader = new FileReader();
-                          reader.onload = (evt) => {
-                            const dataUrl = evt.target?.result as string;
+                          compressImage(file).then(dataUrl => {
                             if (dataUrl) {
                               setEditingEvent({
                                 ...editingEvent,
@@ -3038,8 +3341,7 @@ export default function ConvenorDashboard({
                                 imageUrl: dataUrl
                               });
                             }
-                          };
-                          reader.readAsDataURL(file);
+                          });
                         }
                       }}
                     />

@@ -4,7 +4,198 @@
  */
 
 import * as XLSX from 'xlsx';
-import { Event, Score, Student, normalizeRegisterNo } from '../types';
+import { Event, Score, Student, normalizeRegisterNo, isStudentRegisteredForEvent } from '../types';
+import { computeUnifiedLeaderboard } from '../utils/LeaderboardUtils';
+
+// -------------------------------------------------------------
+// -------------------------------------------------------------
+// CONVENOR: Student USN Assignment & Register No. Correction
+// -------------------------------------------------------------
+
+export interface StudentUsnUpdate {
+  registerNo: string;
+  usnNo: string;
+  name: string;
+  currentUsnNo?: string;
+  correctedRegisterNo?: string;
+}
+
+export interface RegisterNoCorrection {
+  oldRegisterNo: string;
+  newRegisterNo: string;
+  name: string;
+  usnNo?: string;
+}
+
+/**
+ * Download registered students as an Excel sheet for assigning / updating USN NO.
+ * Can filter to only students without USN if `onlyWithoutUsn` is true.
+ */
+export function downloadStudentsWithoutUsnSheet(students: Student[], onlyWithoutUsn: boolean = false): void {
+  const filtered = onlyWithoutUsn 
+    ? students.filter(s => !s.usnNo || s.usnNo.trim() === '')
+    : students;
+
+  const sorted = [...filtered].sort((a, b) =>
+    (a.department || '').localeCompare(b.department || '') ||
+    (a.name || '').localeCompare(b.name || '')
+  );
+
+  const exportData = sorted.map((s, idx) => ({
+    'S.No': idx + 1,
+    'Current Register No': s.registerNo || '',
+    'USN NO': s.usnNo || '', // Convenor fills in official permanent USN here
+    'Student Name': s.name || '',
+    'Mobile Number': s.mobile || '',
+    'Email ID': s.email || '',
+    'Department': s.department || '',
+    'Program / Course': s.programName || '',
+    'Events Registered': (s.registeredEventIds || []).length,
+    'UID (do not edit)': s.uid || '',
+  }));
+
+  const ws = XLSX.utils.json_to_sheet(exportData);
+
+  // Column widths
+  ws['!cols'] = [
+    { wch: 6 },   // S.No
+    { wch: 24 },  // Current Register No
+    { wch: 24 },  // USN NO (Column C)
+    { wch: 30 },  // Student Name
+    { wch: 18 },  // Mobile Number
+    { wch: 34 },  // Email ID
+    { wch: 28 },  // Department
+    { wch: 26 },  // Program / Course
+    { wch: 18 },  // Events Registered
+    { wch: 28 },  // UID
+  ];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Student_USN_List');
+
+  // Add instructions sheet
+  const instructions: any[][] = [
+    ['📋 INSTRUCTIONS FOR ASSIGNING USN NUMBERS'],
+    [''],
+    ['1. In the "Student_USN_List" sheet, find the student rows.'],
+    ['2. Enter or edit the "USN NO" column (Column C) with the official permanent USN for each student.'],
+    ['3. Save the Excel file.'],
+    ['4. Upload the saved file in Convenor Dashboard under "Upload Corrected Sheet with USN".'],
+    ['5. Click "Apply & Save USN Updates". The system will update student records and all event registration lists.'],
+    [''],
+    ['⚠️  IMPORTANT: Do NOT delete or modify "Current Register No" (Column B) as it is used to identify the student.'],
+  ];
+  const wsInstr = XLSX.utils.aoa_to_sheet(instructions);
+  wsInstr['!cols'] = [{ wch: 95 }];
+  XLSX.utils.book_append_sheet(wb, wsInstr, 'Instructions');
+
+  const prefix = onlyWithoutUsn ? 'GCU_Students_Without_USN' : 'GCU_Students_Master_USN';
+  XLSX.writeFile(wb, `${prefix}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+}
+
+/**
+ * Backward compatibility alias for downloadStudentRegisterNoSheet
+ */
+export function downloadStudentRegisterNoSheet(students: Student[]): void {
+  downloadStudentsWithoutUsnSheet(students, false);
+}
+
+/**
+ * Parse an uploaded student USN & register number Excel sheet.
+ * Returns updates with USN numbers and optional register number corrections.
+ */
+export function parseStudentUsnSheet(file: File): Promise<{
+  updates: StudentUsnUpdate[];
+  corrections: RegisterNoCorrection[];
+  conflicts: string[];
+  totalRows: number;
+}> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = e.target?.result;
+        const wb = XLSX.read(data, { type: 'binary' });
+        const firstSheet = wb.SheetNames[0];
+        if (!firstSheet) {
+          throw new Error('The uploaded Excel file contains no sheets.');
+        }
+        const ws = wb.Sheets[firstSheet];
+        const rows = XLSX.utils.sheet_to_json<Record<string, any>>(ws, { defval: '' });
+
+        const getVal = (row: Record<string, any>, ...keys: string[]): string => {
+          for (const key of keys) {
+            for (const k of Object.keys(row)) {
+              const cleanK = k.toLowerCase().trim().replace(/\s+/g, ' ');
+              if (cleanK.includes(key.toLowerCase())) {
+                const v = row[k];
+                if (v !== undefined && v !== null && String(v).trim()) return String(v).trim();
+              }
+            }
+          }
+          return '';
+        };
+
+        const updates: StudentUsnUpdate[] = [];
+        const corrections: RegisterNoCorrection[] = [];
+        const conflicts: string[] = [];
+
+        for (const row of rows) {
+          const currentReg = (getVal(row, 'current register no', 'current register', 'register number', 'register no', 'reg no') || '').toUpperCase().trim();
+          const usnVal = (getVal(row, 'usn no', 'usn', 'usn number', 'permanent usn', 'corrected usn', 'university seat') || '').toUpperCase().trim();
+          const correctedReg = (getVal(row, 'corrected register no', 'corrected register', 'new register') || '').toUpperCase().trim();
+          const name = getVal(row, 'student name', 'name') || currentReg;
+
+          if (!currentReg) continue;
+
+          // If USN is provided
+          if (usnVal) {
+            updates.push({
+              registerNo: currentReg,
+              usnNo: usnVal,
+              name,
+              correctedRegisterNo: correctedReg && correctedReg !== currentReg ? correctedReg : undefined
+            });
+          }
+
+          // If register number was also changed
+          if (correctedReg && correctedReg !== currentReg) {
+            corrections.push({
+              oldRegisterNo: currentReg,
+              newRegisterNo: correctedReg,
+              name,
+              usnNo: usnVal || undefined
+            });
+          }
+        }
+
+        resolve({ updates, corrections, conflicts, totalRows: rows.length });
+      } catch (err: any) {
+        reject(new Error('Failed to parse Excel file: ' + (err?.message || 'Unknown error')));
+      }
+    };
+    reader.onerror = () => reject(new Error('Failed to read file'));
+    reader.readAsBinaryString(file);
+  });
+}
+
+/**
+ * Backward compatibility parser for register number correction
+ */
+export async function parseStudentRegisterNoSheet(file: File): Promise<{
+  corrections: RegisterNoCorrection[];
+  updates: StudentUsnUpdate[];
+  conflicts: string[];
+  totalRows: number;
+}> {
+  const result = await parseStudentUsnSheet(file);
+  return {
+    corrections: result.corrections,
+    updates: result.updates,
+    conflicts: result.conflicts,
+    totalRows: result.totalRows
+  };
+}
 
 // -------------------------------------------------------------
 // CONVENOR: Bulk Event Excel Template Download & Parser
@@ -132,7 +323,7 @@ export async function parseEventsExcel(file: File): Promise<Omit<Event, 'id'>[]>
       return '';
     };
 
-    const title = getVal('title', 'event title');
+    const title = getVal('title', 'event title', 'event name', 'name of event', 'event');
     if (!title || title.toLowerCase().includes('sample') && title.toLowerCase().includes('row')) {
       if (!title) return;
     }
@@ -207,13 +398,15 @@ export function buildOfficialGcuScoringSheetWorksheet(
 
   aoa.push([]); // blank line
 
-  // Main 13 Table Columns matching official GCU format
+  // Main 15 Table Columns matching official GCU format
   aoa.push([
     'Sl No',
     'Register number',
+    'USN NO',
     'Name of the student',
     'Mobile Number',
     'Email ID',
+    'T-Shirt Size',
     'Register Points (5 Marks)',
     'Participated (YES / NO)',
     'Participation Points (15 Marks)',
@@ -224,10 +417,76 @@ export function buildOfficialGcuScoringSheetWorksheet(
     'Total Marks'
   ]);
 
-  const eventId = (event as Event).id;
+  const eventObj = event as Event;
+  const eventId = eventObj?.id;
+  const eventTitleNorm = eventObj?.title ? eventObj.title.trim().toLowerCase() : '';
+  const registeredIdsFromEvent: string[] = (eventObj as any)?.registeredStudentIds || [];
 
-  // Use passed registered students directly
-  let targetStudents: Student[] = students || [];
+  // Filter students to ONLY include those registered for this specific event
+  let targetStudents: Student[] = [];
+
+  if (students && students.length > 0 && (eventId || eventTitleNorm)) {
+    targetStudents = students.filter(student => {
+      // 1. Direct registration check in event.registeredStudentIds
+      if (registeredIdsFromEvent.length > 0) {
+        const isReg = registeredIdsFromEvent.some(rid => {
+          const cleanRid = (rid || '').trim().toUpperCase();
+          return Boolean(
+            (student.registerNo && student.registerNo.trim().toUpperCase() === cleanRid) ||
+            (student.email && student.email.trim().toLowerCase() === rid.trim().toLowerCase()) ||
+            (student.uid && student.uid === rid)
+          );
+        });
+        if (isReg) return true;
+      }
+
+      // 2. Standard helper check using student.registeredEventIds
+      if (eventId && isStudentRegisteredForEvent(student, eventObj, [], scores)) {
+        return true;
+      }
+
+      // 3. Score record match for this specific event
+      const normReg = student.registerNo ? student.registerNo.trim().toUpperCase() : '';
+      const normEmail = student.email ? student.email.trim().toLowerCase() : '';
+      const normUid = student.uid ? student.uid.trim() : '';
+
+      return scores.some(sc => {
+        const scReg = sc.studentRegisterNo ? sc.studentRegisterNo.trim() : '';
+        const isUserMatch = (
+          (normReg && scReg.toUpperCase() === normReg) ||
+          (normEmail && scReg.toLowerCase() === normEmail) ||
+          (normUid && scReg === normUid)
+        );
+        if (!isUserMatch) return false;
+        return Boolean(
+          (eventId && sc.eventId === eventId) ||
+          (eventTitleNorm && sc.eventTitle && sc.eventTitle.trim().toLowerCase() === eventTitleNorm)
+        );
+      });
+    });
+
+    // If filtering returned 0 but students array passed in was already a small pre-filtered subset, preserve passed students
+    if (targetStudents.length === 0 && students.length < 20) {
+      const anyHasRegs = students.some(s => s.registeredEventIds && s.registeredEventIds.length > 0);
+      if (!anyHasRegs) {
+        targetStudents = students;
+      }
+    }
+  } else {
+    targetStudents = students || [];
+  }
+
+  // Deduplicate targetStudents by usnNo or registerNo to ensure no duplicates in the score sheet
+  const uniqueTargetMap = new Map<string, Student>();
+  targetStudents.forEach(s => {
+    const key = (s.usnNo || s.registerNo || '').trim().toUpperCase();
+    if (key && !uniqueTargetMap.has(key)) {
+      uniqueTargetMap.set(key, s);
+    } else if (!key && s.id && !uniqueTargetMap.has(s.id)) {
+      uniqueTargetMap.set(s.id, s);
+    }
+  });
+  targetStudents = Array.from(uniqueTargetMap.values());
 
   const eventScores = eventId ? scores.filter(sc => sc.eventId === eventId) : scores;
 
@@ -259,10 +518,12 @@ export function buildOfficialGcuScoringSheetWorksheet(
 
       aoa.push([
         index + 1,
-        student.registerNo,
-        student.name,
+        student.registerNo || '',
+        student.usnNo || sc?.usnNo || '',
+        student.name || '',
         student.mobile || '',
         student.email || '',
+        student.tShirtSize || 'N/A',
         regPts,
         partStatus,
         partMarks,
@@ -276,7 +537,7 @@ export function buildOfficialGcuScoringSheetWorksheet(
   } else {
     // 15 blank rows for manual print evaluation if no students registered yet
     for (let i = 1; i <= 15; i++) {
-      aoa.push([i, '', '', '', '', '', '', '', '', '', '', '', '']);
+      aoa.push([i, '', '', '', '', '', '', '', '', '', '', '', '', '', '']);
     }
   }
 
@@ -296,6 +557,8 @@ export function buildOfficialGcuScoringSheetWorksheet(
     '',
     '',
     '',
+    '',
+    '',
     ''
   ]);
   aoa.push([
@@ -311,6 +574,8 @@ export function buildOfficialGcuScoringSheetWorksheet(
     '',
     '',
     '',
+    '',
+    '',
     ''
   ]);
 
@@ -319,22 +584,22 @@ export function buildOfficialGcuScoringSheetWorksheet(
   worksheet['!cols'] = [
     { wch: 8 },  // Sl No
     { wch: 22 }, // Register number
-    { wch: 30 }, // Name of the student
+    { wch: 22 }, // USN NO
+    { wch: 28 }, // Name of the student
     { wch: 18 }, // Mobile Number
-    { wch: 28 }, // Email ID
-    { wch: 22 }, // Register Points (5 Marks)
-    { wch: 22 }, // Participated (YES / NO)
+    { wch: 30 }, // Email ID
+    { wch: 15 }, // T-Shirt Size
+    { wch: 24 }, // Register Points (5 Marks)
+    { wch: 24 }, // Participated (YES / NO)
     { wch: 28 }, // Participation Points (15 Marks)
     { wch: 28 }, // Criterion 01 (Out of 20 marks)
     { wch: 28 }, // Criterion 02 (Out of 20 marks)
     { wch: 28 }, // Criterion 03 (Out of 20 marks)
     { wch: 28 }, // Criterion 04 (Out of 20 marks)
-    { wch: 25 }  // Total Marks
+    { wch: 16 }  // Total Marks
   ];
 
   worksheet['!merges'] = [
-    { s: { r: 0, c: 0 }, e: { r: 0, c: 12 } },
-    { s: { r: 1, c: 0 }, e: { r: 1, c: 12 } },
     { s: { r: 2, c: 1 }, e: { r: 2, c: 12 } },
     { s: { r: 3, c: 1 }, e: { r: 3, c: 2 } },
     { s: { r: 3, c: 4 }, e: { r: 3, c: 12 } },
@@ -364,6 +629,7 @@ export function downloadMarksExcel(
 
 export interface ParsedMarks {
   studentRegisterNo: string;
+  usnNo?: string;
   studentName?: string;
   mobile?: string;
   participated: boolean;
@@ -414,8 +680,21 @@ export async function parseMarksExcel(file: File): Promise<ParsedMarks[]> {
     );
   };
 
+  const isUsnHeader = (nk: string): boolean => {
+    return (
+      nk === 'usn' ||
+      nk === 'usnno' ||
+      nk === 'usnnumber' ||
+      nk === 'universityseatno' ||
+      nk === 'universityseatnumber' ||
+      nk === 'correctregno' ||
+      nk === 'correctregisterno' ||
+      nk === 'usnid'
+    );
+  };
+
   const isRegNoHeader = (nk: string): boolean => {
-    if (isRegPtsHeader(nk)) return false;
+    if (isRegPtsHeader(nk) || isUsnHeader(nk)) return false;
     return (
       nk.includes('registernumber') ||
       nk.includes('studentregister') ||
@@ -425,7 +704,6 @@ export async function parseMarksExcel(file: File): Promise<ParsedMarks[]> {
       nk.includes('registrationnumber') ||
       nk.includes('regnumber') ||
       nk.includes('studentreg') ||
-      nk === 'usn' ||
       nk === 'rollno' ||
       nk === 'studentid' ||
       nk === 'reg' ||
@@ -492,6 +770,7 @@ export async function parseMarksExcel(file: File): Promise<ParsedMarks[]> {
 
   let headerRowIdx = -1;
   let regNoIdx = -1;
+  let usnIdx = -1;
   let nameIdx = -1;
   let mobileIdx = -1;
   let partIdx = -1;
@@ -525,6 +804,8 @@ export async function parseMarksExcel(file: File): Promise<ParsedMarks[]> {
         regPtsIdx = idx;
       } else if (isPartPtsHeader(nk) && partPtsIdx === -1) {
         partPtsIdx = idx;
+      } else if (isUsnHeader(nk) && usnIdx === -1) {
+        usnIdx = idx;
       } else if (isRegNoHeader(nk) && regNoIdx === -1) {
         regNoIdx = idx;
       } else if (isNameHeader(nk) && nameIdx === -1) {
@@ -550,20 +831,22 @@ export async function parseMarksExcel(file: File): Promise<ParsedMarks[]> {
 
     if (regNoIdx !== -1) {
       console.log('📊 Parsing Excel marks - Header found at row:', headerRowIdx);
-      console.log('Column indices:', { regNoIdx, c1Idx, c2Idx, c3Idx, c4Idx, totalIdx, partIdx });
+      console.log('Column indices:', { regNoIdx, usnIdx, c1Idx, c2Idx, c3Idx, c4Idx, totalIdx, partIdx });
 
       for (let r = headerRowIdx + 1; r < rows2D.length; r++) {
         const row = rows2D[r];
         if (!Array.isArray(row)) continue;
-        const regNo = normalizeRegisterNo(String(row[regNoIdx] || ''));
+        const usnNo = usnIdx !== -1 ? String(row[usnIdx] || '').trim().toUpperCase() : undefined;
+        let regNo = normalizeRegisterNo(String(row[regNoIdx] || ''));
+        if (!regNo) {
+          regNo = usnNo ? normalizeRegisterNo(usnNo) : (mobileIdx !== -1 && row[mobileIdx] ? normalizeRegisterNo(String(row[mobileIdx])) : '');
+        }
         if (!regNo) continue;
-
         const c1Val = row[c1Idx];
         const c2Val = row[c2Idx];
         const c3Val = row[c3Idx];
         const c4Val = row[c4Idx];
         const partVal = row[partIdx];
-        console.log(`Row ${r} - ${regNo}: c1=${c1Val}, c2=${c2Val}, c3=${c3Val}, c4=${c4Val}, participated=${partVal}`);
 
         const nkReg = normKey(regNo);
         if (
@@ -603,13 +886,14 @@ export async function parseMarksExcel(file: File): Promise<ParsedMarks[]> {
         const isExplicitNo = partRaw === 'NO' || partRaw === 'N' || partRaw === 'FALSE' || partRaw === '0' || partRaw === 'ABSENT';
         const isExplicitYes = partRaw === 'YES' || partRaw === 'Y' || partRaw === 'TRUE' || partRaw === '1' || partRaw === 'PRESENT';
 
+        const criteriaSum = c1 + c2 + c3 + c4;
         let participated = false;
         let participationMarks = 0;
 
         if (isExplicitNo) {
           participated = false;
           participationMarks = partPtsFromCell !== undefined ? partPtsFromCell : 0;
-        } else if (isExplicitYes || (partPtsFromCell !== undefined && partPtsFromCell > 0)) {
+        } else if (isExplicitYes || (partPtsFromCell !== undefined && partPtsFromCell > 0) || criteriaSum > 0 || totalScore > 5) {
           participated = true;
           participationMarks = partPtsFromCell !== undefined ? partPtsFromCell : 15;
         } else {
@@ -617,7 +901,6 @@ export async function parseMarksExcel(file: File): Promise<ParsedMarks[]> {
           participationMarks = partPtsFromCell !== undefined ? partPtsFromCell : 0;
         }
 
-        const criteriaSum = c1 + c2 + c3 + c4;
         if (totalScore === 0) {
           totalScore = regPts + participationMarks + criteriaSum;
         }
@@ -627,6 +910,7 @@ export async function parseMarksExcel(file: File): Promise<ParsedMarks[]> {
 
         parsed.push({
           studentRegisterNo: regNo,
+          usnNo: usnNo || undefined,
           studentName,
           mobile,
           participated,
@@ -649,6 +933,7 @@ export async function parseMarksExcel(file: File): Promise<ParsedMarks[]> {
     const rawRows = XLSX.utils.sheet_to_json<Record<string, any>>(worksheet, { defval: '' });
     rawRows.forEach((row) => {
       let regNo = '';
+      let usnNo: string | undefined = undefined;
       let studentName: string | undefined = undefined;
       let mobile: string | undefined = undefined;
       let partRaw = '';
@@ -672,6 +957,8 @@ export async function parseMarksExcel(file: File): Promise<ParsedMarks[]> {
         } else if (partPtsFromCell === undefined && isPartPtsHeader(nk)) {
           const p = parseFloat(String(val));
           if (!isNaN(p)) partPtsFromCell = p;
+        } else if (!usnNo && isUsnHeader(nk)) {
+          usnNo = String(val).trim().toUpperCase();
         } else if (!regNo && isRegNoHeader(nk)) {
           regNo = normalizeRegisterNo(String(val));
         } else if (!studentName && isNameHeader(nk)) {
@@ -695,6 +982,10 @@ export async function parseMarksExcel(file: File): Promise<ParsedMarks[]> {
         }
       }
 
+      if (!regNo) {
+        regNo = usnNo ? normalizeRegisterNo(usnNo) : (mobile ? normalizeRegisterNo(mobile) : '');
+      }
+
       if (!regNo) return;
       const nkReg = normKey(regNo);
       if (
@@ -715,13 +1006,14 @@ export async function parseMarksExcel(file: File): Promise<ParsedMarks[]> {
       const isExplicitNo = partRaw === 'NO' || partRaw === 'N' || partRaw === 'FALSE' || partRaw === '0' || partRaw === 'ABSENT';
       const isExplicitYes = partRaw === 'YES' || partRaw === 'Y' || partRaw === 'TRUE' || partRaw === '1' || partRaw === 'PRESENT';
 
+      const criteriaSum = c1 + c2 + c3 + c4;
       let participated = false;
       let participationMarks = 0;
 
       if (isExplicitNo) {
         participated = false;
         participationMarks = partPtsFromCell !== undefined ? partPtsFromCell : 0;
-      } else if (isExplicitYes || (partPtsFromCell !== undefined && partPtsFromCell > 0)) {
+      } else if (isExplicitYes || (partPtsFromCell !== undefined && partPtsFromCell > 0) || criteriaSum > 0 || totalScore > 5) {
         participated = true;
         participationMarks = partPtsFromCell !== undefined ? partPtsFromCell : 15;
       } else {
@@ -729,7 +1021,6 @@ export async function parseMarksExcel(file: File): Promise<ParsedMarks[]> {
         participationMarks = partPtsFromCell !== undefined ? partPtsFromCell : 0;
       }
 
-      const criteriaSum = c1 + c2 + c3 + c4;
       if (totalScore === 0) {
         totalScore = regPtsFinal + participationMarks + criteriaSum;
       }
@@ -738,6 +1029,7 @@ export async function parseMarksExcel(file: File): Promise<ParsedMarks[]> {
 
       parsed.push({
         studentRegisterNo: regNo,
+        usnNo: usnNo || undefined,
         studentName,
         mobile,
         participated,
@@ -807,57 +1099,187 @@ export function exportScoreSheetsAll(
   if (!events || events.length === 0) return;
 
   const workbook = XLSX.utils.book_new();
-
-  events.forEach((evt, idx) => {
-    const worksheet = buildOfficialGcuScoringSheetWorksheet(evt, students, scores, occasionTitle);
-    const tabName = `${idx + 1}. ${evt.title.replace(/[:\\/?*\[\]]/g, '').substring(0, 22)}`;
-    XLSX.utils.book_append_sheet(workbook, worksheet, tabName);
-  });
+  const worksheet = buildCumulativeMatrixWorksheet(events, students, scores, `${occasionTitle} Master Score Matrix`);
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Master Score Sheet');
 
   XLSX.writeFile(workbook, `Fresherism_MASTER_ALL_EVENTS_SCORESHEET.xlsx`);
+}
+
+/**
+ * Helper to build a cumulative score matrix worksheet where each student is a row
+ * and each event is a column, concluding with Cumulative Total Score.
+ */
+export function buildCumulativeMatrixWorksheet(
+  eventsList: Event[],
+  students: Student[],
+  scores: Score[],
+  reportTitle: string = 'Cumulative Score Matrix'
+): XLSX.WorkSheet {
+  const aoa: any[][] = [];
+
+  // Header Title block
+  aoa.push([`GARDEN CITY UNIVERSITY — ${reportTitle.toUpperCase()}`]);
+  aoa.push([`Generated On: ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()} | Total Included Events: ${eventsList.length}`]);
+  aoa.push([]); // blank row
+
+  // Table Column Headers: Student Info + 1 column per event + Cumulative Total
+  const headerRow = [
+    'Sl No',
+    'Register Number',
+    'USN NO',
+    'Student Name',
+    'Department',
+    'Program Name',
+    'School',
+    'Email ID',
+    'Mobile Number',
+    ...eventsList.map(e => `${e.title} (${e.date})`),
+    'Cumulative Total Score'
+  ];
+  aoa.push(headerRow);
+
+  const unifiedEntries = computeUnifiedLeaderboard(students, scores, eventsList);
+
+  const studentRows = unifiedEntries.map((entry, idx) => {
+    const eventScoresCells = eventsList.map((evt) => {
+      const scoreData = entry.eventScoresMap.get(evt.id);
+      return scoreData ? scoreData.score : 0; // 0 if they didn't participate and weren't registered
+    });
+
+    return {
+      rowArray: [
+        0, // placeholder for Sl No
+        entry.registerNo || 'N/A',
+        entry.usnNo || '',
+        entry.name || 'N/A',
+        entry.department || '',
+        entry.programName || '',
+        entry.school || '',
+        entry.email || '',
+        entry.mobile || '',
+        ...eventScoresCells,
+        entry.totalScore
+      ]
+    };
+  });
+
+  // Add rows with Sl No
+  studentRows.forEach((item, idx) => {
+    item.rowArray[0] = idx + 1;
+    aoa.push(item.rowArray);
+  });
+
+  const worksheet = XLSX.utils.aoa_to_sheet(aoa);
+
+  // Auto-fit column widths
+  const colWidths = [
+    { wch: 8 },  // Sl No
+    { wch: 22 }, // Reg No
+    { wch: 22 }, // USN NO
+    { wch: 28 }, // Name
+    { wch: 24 }, // Dept
+    { wch: 24 }, // Program
+    { wch: 24 }, // School
+    { wch: 28 }, // Email
+    { wch: 18 }, // Mobile
+    ...eventsList.map(e => ({ wch: Math.max(20, (e.title.length || 15) + 6) })),
+    { wch: 25 }  // Cumulative Total
+  ];
+  worksheet['!cols'] = colWidths;
+
+  return worksheet;
+}
+
+import { isEventOver } from '../dateUtils';
+
+/**
+ * Export "Cumulative Reports_Coordinators Submitted" (.xlsx)
+ * Includes all events where coordinators have reported completion to convenor or submitted scores.
+ */
+export function exportCumulativeReportCoordinatorsSubmitted(
+  events: Event[],
+  students: Student[],
+  scores: Score[],
+  occasionTitle: string = 'Fresherism 2026'
+): void {
+  // Filter events reported by coordinators to convenor (MUST be completed/ended events)
+  const reportedEvents = events.filter(evt =>
+    isEventOver(evt) && (
+      evt.reportedToConvenor ||
+      scores.some(sc => sc.eventId === evt.id && (sc.scoreEntered || (sc.eventScore ?? 0) > 0 || sc.participated))
+    )
+  );
+
+  const targetEvents = reportedEvents.length > 0 ? reportedEvents : events;
+  const worksheet = buildCumulativeMatrixWorksheet(
+    targetEvents,
+    students,
+    scores,
+    `Cumulative Reports — Coordinators Submitted (${targetEvents.length} Events)`
+  );
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Coordinators_Submitted');
+
+  XLSX.writeFile(workbook, `Cumulative Reports_Coordinators Submitted.xlsx`);
+}
+
+/**
+ * Export "Cumulative Reports_Convenor Approved / Published" (.xlsx)
+ * Includes all events that have been approved and published to leaderboard by Convenor.
+ */
+export function exportCumulativeReportConvenorPublished(
+  events: Event[],
+  students: Student[],
+  scores: Score[],
+  occasionTitle: string = 'Fresherism 2026'
+): void {
+  // Filter events published by convenor
+  const publishedEvents = events.filter(evt => evt.resultsPublished === true);
+
+  const targetEvents = publishedEvents.length > 0 ? publishedEvents : events;
+  const worksheet = buildCumulativeMatrixWorksheet(
+    targetEvents,
+    students,
+    scores,
+    `Cumulative Reports — Convenor Approved / Published (${targetEvents.length} Events)`
+  );
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Convenor_Approved_Published');
+
+  XLSX.writeFile(workbook, `Cumulative Reports_Convenor Approved Published.xlsx`);
 }
 
 /**
  * 4. Export Score Sheet for Top 100 Overall Students / Leaderboard
  */
 export function exportScoreSheetsTop100(students: Student[], scores: Score[], events: Event[], topLimit: number = 100): void {
-  const ranked = students.map(s => {
-    const studentScores = scores.filter(sc => sc.studentRegisterNo === s.registerNo);
-    const totalScore = studentScores.reduce((acc, curr) => acc + (curr.totalScore || 0), 0);
-    const wins = studentScores.filter(sc => sc.isWinner).length;
-    const participatedCount = studentScores.filter(sc => sc.participated || (sc.participationPoints ?? 0) > 0).length;
+  const unifiedEntries = computeUnifiedLeaderboard(students, scores, events);
 
-    return {
-      student: s,
-      totalScore,
-      wins,
-      participatedCount,
-      registeredCount: s.registeredEventIds?.length || 0
-    };
-  }).sort((a, b) => b.totalScore - a.totalScore || b.wins - a.wins);
-
-  const topStudents = ranked.slice(0, topLimit);
+  const topStudents = unifiedEntries.slice(0, topLimit);
 
   const rows = topStudents.map((item, index) => ({
     'Overall Rank': index + 1,
-    'Student Register No': item.student.registerNo,
-    'Student Name': item.student.name,
-    'Department': item.student.department || '',
-    'Program Name': item.student.programName || '',
-    'School': item.student.school || '',
-    'Email ID': item.student.email || '',
-    'Mobile No': item.student.mobile || '',
+    'Student Register No': item.registerNo,
+    'USN NO': item.usnNo || '',
+    'Student Name': item.name,
+    'Department': item.department || '',
+    'Program Name': item.programName || '',
+    'School': item.school || '',
+    'Email ID': item.email || '',
+    'Mobile No': item.mobile || '',
     'Total Aggregate Score': item.totalScore,
     'Total Winner Titles 🏆': item.wins,
-    'Events Participated': item.participatedCount,
-    'Total Events Registered': item.registeredCount,
+    'Events Participated': item.eventsParticipatedCount,
+    'Total Events Registered': item.eventsParticipatedCount,
     'Award Status': item.wins > 0 ? `WINNER (${item.wins} Wins)` : (index < 10 ? 'TOP 10 FINISHER' : 'TOP 100 MERIT')
   }));
 
   const worksheet = XLSX.utils.json_to_sheet(rows);
 
   worksheet['!cols'] = [
-    { wch: 14 }, { wch: 22 }, { wch: 28 }, { wch: 25 }, { wch: 25 },
+    { wch: 14 }, { wch: 22 }, { wch: 22 }, { wch: 28 }, { wch: 25 }, { wch: 25 },
     { wch: 25 }, { wch: 28 }, { wch: 18 }, { wch: 22 }, { wch: 22 },
     { wch: 20 }, { wch: 22 }, { wch: 25 }
   ];
@@ -893,6 +1315,7 @@ export function downloadNccStudentsExcel(students: Student[]): void {
   const rows = nccCadets.map((s, idx) => ({
     'Sl No': idx + 1,
     'Register No / Student ID': s.registerNo || '',
+    'USN NO': s.usnNo || '',
     'Student Name': s.name || '',
     'Email ID': s.email || '',
     'Mobile Number': s.mobile || '',
@@ -906,6 +1329,7 @@ export function downloadNccStudentsExcel(students: Student[]): void {
   const worksheet = XLSX.utils.json_to_sheet(rows.length > 0 ? rows : [{
     'Sl No': 1,
     'Register No / Student ID': 'No NCC Registrations yet',
+    'USN NO': '',
     'Student Name': '-',
     'Email ID': '-',
     'Mobile Number': '-',
@@ -917,7 +1341,7 @@ export function downloadNccStudentsExcel(students: Student[]): void {
   }]);
 
   worksheet['!cols'] = [
-    { wch: 8 }, { wch: 22 }, { wch: 28 }, { wch: 30 }, { wch: 18 },
+    { wch: 8 }, { wch: 22 }, { wch: 22 }, { wch: 28 }, { wch: 30 }, { wch: 18 },
     { wch: 25 }, { wch: 25 }, { wch: 25 }, { wch: 18 }, { wch: 24 }
   ];
 
@@ -925,4 +1349,324 @@ export function downloadNccStudentsExcel(students: Student[]): void {
   XLSX.utils.book_append_sheet(workbook, worksheet, 'NCC_Army_Wing_Cadets');
 
   XLSX.writeFile(workbook, `GCU_NCC_Army_Wing_Cadets_2026.xlsx`);
+}
+
+// -------------------------------------------------------------
+// CONVENOR / COORDINATOR: 4 SPECIFIC EVENT EXCEL REPORT EXPORTERS
+// 1. Registered Students List
+// 2. Participation List (Present)
+// 3. Not Participants List (Absent)
+// 4. Scores of Participants
+// -------------------------------------------------------------
+
+export function exportRegisteredStudentsList(
+  event: Event,
+  students: Student[],
+  scores: Score[]
+): void {
+  const targetStudents = getTargetStudentsForEvent(event, students, scores);
+
+  const exportData = targetStudents.map((st, index) => ({
+    'Sl No': index + 1,
+    'Register Number': st.registerNo || '',
+    'USN NO': st.usnNo || '',
+    'Student Name': st.name || '',
+    'Mobile Number': st.mobile || '',
+    'Email ID': st.email || '',
+    'T-Shirt Size': st.tShirtSize || 'N/A',
+    'Department': st.department || '',
+    'School': st.school || 'Garden City University',
+    'Registration Status': 'Confirmed Registered'
+  }));
+
+  const worksheet = XLSX.utils.json_to_sheet(exportData.length > 0 ? exportData : [{
+    'Sl No': 1,
+    'Register Number': 'N/A',
+    'USN NO': 'N/A',
+    'Student Name': 'No Registered Students Found',
+    'Mobile Number': '',
+    'Email ID': '',
+    'T-Shirt Size': '',
+    'Department': '',
+    'School': '',
+    'Registration Status': ''
+  }]);
+
+  worksheet['!cols'] = [
+    { wch: 8 },  { wch: 22 }, { wch: 22 }, { wch: 30 }, { wch: 18 },
+    { wch: 32 }, { wch: 15 }, { wch: 25 }, { wch: 28 }, { wch: 22 }
+  ];
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Registered Students');
+
+  const cleanTitle = (event.title || 'Event').replace(/[^a-zA-Z0-9_\-]/g, '_');
+  XLSX.writeFile(workbook, `${cleanTitle}_Registered_Students.xlsx`);
+}
+
+export function exportParticipationList(
+  event: Event,
+  students: Student[],
+  scores: Score[]
+): void {
+  const targetStudents = getTargetStudentsForEvent(event, students, scores);
+  const eventScores = scores.filter(s => s.eventId === event.id || (s.eventTitle && event.title && s.eventTitle.trim().toLowerCase() === event.title.trim().toLowerCase()));
+
+  const participants = targetStudents.filter(st => {
+    const normReg = st.registerNo ? st.registerNo.trim().toUpperCase() : '';
+    const sc = eventScores.find(s => (s.studentRegisterNo && s.studentRegisterNo.trim().toUpperCase() === normReg) || (st.usnNo && s.usnNo && s.usnNo.trim().toUpperCase() === st.usnNo.trim().toUpperCase()));
+    return Boolean(
+      sc?.participated || 
+      (sc?.participationPoints ?? 0) > 0 || 
+      (sc?.eventScore ?? 0) > 0 || 
+      (sc?.totalScore ?? 0) > 5 || 
+      sc?.scoreEntered
+    );
+  });
+
+  const exportData = participants.map((st, index) => {
+    const normReg = st.registerNo ? st.registerNo.trim().toUpperCase() : '';
+    const sc = eventScores.find(s => (s.studentRegisterNo && s.studentRegisterNo.trim().toUpperCase() === normReg) || (st.usnNo && s.usnNo && s.usnNo.trim().toUpperCase() === st.usnNo.trim().toUpperCase()));
+    return {
+      'Sl No': index + 1,
+      'Register Number': st.registerNo || '',
+      'USN NO': st.usnNo || sc?.usnNo || '',
+      'Student Name': st.name || '',
+      'Mobile Number': st.mobile || '',
+      'Email ID': st.email || '',
+      'T-Shirt Size': st.tShirtSize || 'N/A',
+      'Department': st.department || '',
+      'Participation Status': 'PRESENT / PARTICIPATED',
+      'Participation Points (15 Marks)': sc?.participationPoints ?? 15,
+      'Total Marks': sc?.totalScore ?? 20
+    };
+  });
+
+  const worksheet = XLSX.utils.json_to_sheet(exportData.length > 0 ? exportData : [{
+    'Sl No': 1,
+    'Register Number': 'N/A',
+    'USN NO': 'N/A',
+    'Student Name': 'No Participants Recorded',
+    'Mobile Number': '',
+    'Email ID': '',
+    'T-Shirt Size': '',
+    'Department': '',
+    'Participation Status': '',
+    'Participation Points (15 Marks)': 0,
+    'Total Marks': 0
+  }]);
+
+  worksheet['!cols'] = [
+    { wch: 8 },  { wch: 22 }, { wch: 22 }, { wch: 30 }, { wch: 18 },
+    { wch: 32 }, { wch: 15 }, { wch: 25 }, { wch: 28 },
+    { wch: 30 }, { wch: 15 }
+  ];
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Participation List');
+
+  const cleanTitle = (event.title || 'Event').replace(/[^a-zA-Z0-9_\-]/g, '_');
+  XLSX.writeFile(workbook, `${cleanTitle}_Participation_List.xlsx`);
+}
+
+export function exportNotParticipantsList(
+  event: Event,
+  students: Student[],
+  scores: Score[]
+): void {
+  const targetStudents = getTargetStudentsForEvent(event, students, scores);
+  const eventScores = scores.filter(s => s.eventId === event.id || (s.eventTitle && event.title && s.eventTitle.trim().toLowerCase() === event.title.trim().toLowerCase()));
+
+  const nonParticipants = targetStudents.filter(st => {
+    const normReg = st.registerNo ? st.registerNo.trim().toUpperCase() : '';
+    const sc = eventScores.find(s => (s.studentRegisterNo && s.studentRegisterNo.trim().toUpperCase() === normReg) || (st.usnNo && s.usnNo && s.usnNo.trim().toUpperCase() === st.usnNo.trim().toUpperCase()));
+    const isPart = Boolean(
+      sc?.participated || 
+      (sc?.participationPoints ?? 0) > 0 || 
+      (sc?.eventScore ?? 0) > 0 || 
+      (sc?.totalScore ?? 0) > 5 || 
+      sc?.scoreEntered
+    );
+    return !isPart;
+  });
+
+  const exportData = nonParticipants.map((st, index) => ({
+    'Sl No': index + 1,
+    'Register Number': st.registerNo || '',
+    'USN NO': st.usnNo || '',
+    'Student Name': st.name || '',
+    'Mobile Number': st.mobile || '',
+    'Email ID': st.email || '',
+    'T-Shirt Size': st.tShirtSize || 'N/A',
+    'Department': st.department || '',
+    'Attendance Status': 'ABSENT / NOT PARTICIPATED'
+  }));
+
+  const worksheet = XLSX.utils.json_to_sheet(exportData.length > 0 ? exportData : [{
+    'Sl No': 1,
+    'Register Number': 'N/A',
+    'USN NO': 'N/A',
+    'Student Name': 'All Registered Students Participated (0 Absentees)',
+    'Mobile Number': '',
+    'Email ID': '',
+    'T-Shirt Size': '',
+    'Department': '',
+    'Attendance Status': ''
+  }]);
+
+  worksheet['!cols'] = [
+    { wch: 8 },  { wch: 22 }, { wch: 22 }, { wch: 30 }, { wch: 18 },
+    { wch: 32 }, { wch: 15 }, { wch: 25 }, { wch: 30 }
+  ];
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Not Participants List');
+
+  const cleanTitle = (event.title || 'Event').replace(/[^a-zA-Z0-9_\-]/g, '_');
+  XLSX.writeFile(workbook, `${cleanTitle}_Not_Participants_List.xlsx`);
+}
+
+export function exportParticipantsScores(
+  event: Event,
+  students: Student[],
+  scores: Score[]
+): void {
+  const targetStudents = getTargetStudentsForEvent(event, students, scores);
+  const eventScores = scores.filter(s => s.eventId === event.id || (s.eventTitle && event.title && s.eventTitle.trim().toLowerCase() === event.title.trim().toLowerCase()));
+
+  const scoredParticipants = targetStudents.map(st => {
+    const normReg = st.registerNo ? st.registerNo.trim().toUpperCase() : '';
+    const sc = eventScores.find(s => (s.studentRegisterNo && s.studentRegisterNo.trim().toUpperCase() === normReg) || (st.usnNo && s.usnNo && s.usnNo.trim().toUpperCase() === st.usnNo.trim().toUpperCase()));
+    const isPart = Boolean(
+      sc?.participated || 
+      (sc?.participationPoints ?? 0) > 0 || 
+      (sc?.eventScore ?? 0) > 0 || 
+      (sc?.totalScore ?? 0) > 5 || 
+      sc?.scoreEntered
+    );
+    return {
+      student: st,
+      score: sc,
+      isPart,
+      totalMarks: isPart ? (sc?.totalScore ?? sc?.eventScore ?? 0) : 0
+    };
+  }).filter(item => item.isPart);
+
+  scoredParticipants.sort((a, b) => b.totalMarks - a.totalMarks);
+
+  const exportData = scoredParticipants.map((item, index) => {
+    const st = item.student;
+    const sc = item.score;
+    const isWinner = Boolean(sc?.isWinner || index === 0);
+    return {
+      'Rank / Result': isWinner ? `🥇 Winner (Rank ${index + 1})` : `Rank ${index + 1}`,
+      'Register Number': st.registerNo || '',
+      'USN NO': st.usnNo || sc?.usnNo || '',
+      'Student Name': st.name || '',
+      'Mobile Number': st.mobile || '',
+      'Email ID': st.email || '',
+      'Department': st.department || '',
+      'T-Shirt Size': st.tShirtSize || 'N/A',
+      'Register Points (5 Marks)': sc?.registrationPoints ?? 5,
+      'Participation Points (15 Marks)': sc?.participationPoints ?? 15,
+      'Criterion 01 (20 Marks)': sc?.criterion1 ?? 0,
+      'Criterion 02 (20 Marks)': sc?.criterion2 ?? 0,
+      'Criterion 03 (20 Marks)': sc?.criterion3 ?? 0,
+      'Criterion 04 (20 Marks)': sc?.criterion4 ?? 0,
+      'Total Marks (100 Marks)': item.totalMarks
+    };
+  });
+
+  const worksheet = XLSX.utils.json_to_sheet(exportData.length > 0 ? exportData : [{
+    'Rank / Result': 'N/A',
+    'Register Number': 'N/A',
+    'USN NO': 'N/A',
+    'Student Name': 'No Graded Participants Recorded Yet',
+    'Mobile Number': '',
+    'Email ID': '',
+    'Department': '',
+    'T-Shirt Size': '',
+    'Register Points (5 Marks)': 0,
+    'Participation Points (15 Marks)': 0,
+    'Criterion 01 (20 Marks)': 0,
+    'Criterion 02 (20 Marks)': 0,
+    'Criterion 03 (20 Marks)': 0,
+    'Criterion 04 (20 Marks)': 0,
+    'Total Marks (100 Marks)': 0
+  }]);
+
+  worksheet['!cols'] = [
+    { wch: 22 }, { wch: 20 }, { wch: 30 }, { wch: 18 },
+    { wch: 32 }, { wch: 25 }, { wch: 15 }, { wch: 25 },
+    { wch: 28 }, { wch: 22 }, { wch: 22 }, { wch: 22 },
+    { wch: 22 }, { wch: 24 }
+  ];
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Participants Scores');
+
+  const cleanTitle = (event.title || 'Event').replace(/[^a-zA-Z0-9_\-]/g, '_');
+  XLSX.writeFile(workbook, `${cleanTitle}_Scores_of_Participants.xlsx`);
+}
+
+export function getTargetStudentsForEvent(
+  event: Event | { id?: string; title: string; registeredStudentIds?: string[] },
+  students: Student[],
+  scores: Score[]
+): Student[] {
+  const eventObj = event as Event;
+  const eventId = eventObj?.id;
+  const eventTitleNorm = eventObj?.title ? eventObj.title.trim().toLowerCase() : '';
+  const registeredIdsFromEvent: string[] = (eventObj as any)?.registeredStudentIds || [];
+
+  let targetStudents: Student[] = [];
+
+  if (students && students.length > 0 && (eventId || eventTitleNorm)) {
+    targetStudents = students.filter(student => {
+      if (registeredIdsFromEvent.length > 0) {
+        const isReg = registeredIdsFromEvent.some(rid => {
+          const cleanRid = (rid || '').trim().toUpperCase();
+          return Boolean(
+            (student.registerNo && student.registerNo.trim().toUpperCase() === cleanRid) ||
+            (student.email && student.email.trim().toLowerCase() === rid.trim().toLowerCase()) ||
+            (student.uid && student.uid === rid)
+          );
+        });
+        if (isReg) return true;
+      }
+
+      if (eventId && isStudentRegisteredForEvent(student, eventObj, [], scores)) {
+        return true;
+      }
+
+      const normReg = student.registerNo ? student.registerNo.trim().toUpperCase() : '';
+      const normEmail = student.email ? student.email.trim().toLowerCase() : '';
+      const normUid = student.uid ? student.uid.trim() : '';
+
+      return scores.some(sc => {
+        const scReg = sc.studentRegisterNo ? sc.studentRegisterNo.trim() : '';
+        const isUserMatch = (
+          (normReg && scReg.toUpperCase() === normReg) ||
+          (normEmail && scReg.toLowerCase() === normEmail) ||
+          (normUid && scReg === normUid)
+        );
+        if (!isUserMatch) return false;
+        return Boolean(
+          (eventId && sc.eventId === eventId) ||
+          (eventTitleNorm && sc.eventTitle && sc.eventTitle.trim().toLowerCase() === eventTitleNorm)
+        );
+      });
+    });
+
+    if (targetStudents.length === 0 && students.length < 20) {
+      const anyHasRegs = students.some(s => s.registeredEventIds && s.registeredEventIds.length > 0);
+      if (!anyHasRegs) {
+        targetStudents = students;
+      }
+    }
+  } else {
+    targetStudents = students || [];
+  }
+
+  return targetStudents;
 }

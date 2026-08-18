@@ -8,7 +8,7 @@ import {
   Sparkles, Calendar, Users, Award, ShieldAlert, RotateCcw, 
   GraduationCap, UserCog, Settings2, Home, ShieldCheck
 } from 'lucide-react';
-import { Event, Student, Score, Notification, MessageToCoordinator, UserRole, FacultyCoordinator, Occasion, isMatchingEmail, findStudentMatch, normalizeRegisterNo, getStudentRegisteredEventIds } from './types';
+import { Event, Student, Score, Notification, MessageToCoordinator, UserRole, FacultyCoordinator, Occasion, isMatchingEmail, findStudentMatch, normalizeRegisterNo, getStudentRegisteredEventIds, enrichStudentsWithRegisteredEventIds } from './types';
 import { 
   INITIAL_EVENTS, 
   INITIAL_STUDENTS, 
@@ -54,6 +54,7 @@ import {
   dbDeleteStudent,
   dbSaveScore,
   dbDeleteScore,
+  dbSaveStudentsAndScoresBatch,
   dbAddEventRegistration,
   dbRemoveEventRegistration,
   dbSaveNotification,
@@ -65,6 +66,8 @@ import {
   subscribeAuthUser,
   logoutStudentAuth
 } from './firebase';
+import { RegisterNoCorrection, StudentUsnUpdate } from './components/ExcelHelper';
+import { isEventRegistrationClosed } from './dateUtils';
 
 export default function App() {
   // Global Occasions & Active Occasion
@@ -100,6 +103,9 @@ export default function App() {
   });
 
   const eventsRef = useRef<Event[]>(events);
+  // Track events that were edited locally but whose Firestore confirmation hasn't arrived yet.
+  // Key = event id, Value = timestamp when edit was saved. Cleared after 8s (plenty of time for Firestore).
+  const pendingEventEditsRef = useRef<Map<string, Event>>(new Map());
   const rawScoresRef = useRef<Score[]>([]);
   useEffect(() => {
     eventsRef.current = events;
@@ -305,12 +311,13 @@ export default function App() {
       fbScores.forEach(sc => {
         if (!sc.studentRegisterNo || (!sc.eventId && !sc.eventTitle)) return;
         const cleanReg = sc.studentRegisterNo.trim().toUpperCase();
-        
+
         let canonicalEvtId = (sc.eventId || '').trim();
         const normTitle = (sc.eventTitle || '').trim().toLowerCase();
+        const originalDocId = sc.id || ''; // remember the original Firestore document ID
 
-        const matchEvt = evts.find(e => 
-          (canonicalEvtId && e.id === canonicalEvtId) || 
+        const matchEvt = evts.find(e =>
+          (canonicalEvtId && e.id === canonicalEvtId) ||
           (normTitle && e.title && e.title.trim().toLowerCase() === normTitle)
         );
         if (matchEvt) {
@@ -322,6 +329,18 @@ export default function App() {
         }
 
         const safeDocId = `${cleanReg}_${canonicalEvtId}`.replace(/\//g, '_');
+
+        // Heal orphaned evt-bulk-* or any stale document IDs:
+        // If the computed canonical doc ID differs from the original, the score was saved
+        // under a temporary bulk ID (e.g. evt-bulk-1785395372601-30). Re-save it under the
+        // correct ID and delete the orphan so it never comes back on reload.
+        if (originalDocId && originalDocId !== safeDocId && /evt-bulk-|_evt-bulk-/.test(originalDocId)) {
+          const healedScore = { ...sc, id: safeDocId };
+          dbSaveScore(healedScore).catch(() => {});
+          dbDeleteScore(originalDocId, true).catch(() => {});
+          sc = healedScore;
+        }
+
         sc.id = safeDocId;
 
         const key = `${cleanReg}___${canonicalEvtId}`;
@@ -330,29 +349,17 @@ export default function App() {
         if (!existing) {
           canonicalScoresMap.set(key, { ...sc });
         } else {
-          // If there are duplicate score documents in Firestore for the same student/event, latest one wins
-          canonicalScoresMap.set(key, { ...existing, ...sc });
-        }
-      });
+          // Prefer graded score (with marks/scoreEntered) over un-graded default registration score
+          const existingFiled = Boolean(existing.scoreEntered || (existing.totalScore ?? 0) > 5 || (existing.eventScore ?? 0) > 0 || ((existing.criterion1 ?? 0) + (existing.criterion2 ?? 0) + (existing.criterion3 ?? 0) + (existing.criterion4 ?? 0)) > 0);
+          const scFiled = Boolean(sc.scoreEntered || (sc.totalScore ?? 0) > 5 || (sc.eventScore ?? 0) > 0 || ((sc.criterion1 ?? 0) + (sc.criterion2 ?? 0) + (sc.criterion3 ?? 0) + (sc.criterion4 ?? 0)) > 0);
 
-      localCached.forEach(sc => {
-        if (!sc.studentRegisterNo || (!sc.eventId && !sc.eventTitle)) return;
-        const cleanReg = sc.studentRegisterNo.trim().toUpperCase();
-        let canonicalEvtId = (sc.eventId || '').trim();
-        const normTitle = (sc.eventTitle || '').trim().toLowerCase();
-
-        const matchEvt = evts.find(e => 
-          (canonicalEvtId && e.id === canonicalEvtId) || 
-          (normTitle && e.title && e.title.trim().toLowerCase() === normTitle)
-        );
-        if (matchEvt) canonicalEvtId = matchEvt.id;
-
-        const key = `${cleanReg}___${canonicalEvtId}`;
-        const existing = canonicalScoresMap.get(key);
-        
-        // Only use local cache if Firestore hasn't provided this score yet
-        if (!existing) {
-          canonicalScoresMap.set(key, { ...sc });
+          if (scFiled && !existingFiled) {
+            canonicalScoresMap.set(key, { ...existing, ...sc });
+          } else if (existingFiled && !scFiled) {
+            canonicalScoresMap.set(key, { ...sc, ...existing });
+          } else {
+            canonicalScoresMap.set(key, { ...existing, ...sc });
+          }
         }
       });
 
@@ -360,17 +367,17 @@ export default function App() {
       setScores(processedList);
       rawScoresRef.current = processedList;
       try {
-        localStorage.setItem('gcu_scores_cache', JSON.stringify(processedList));
+        try { localStorage.setItem('gcu_scores_cache', JSON.stringify(processedList)); } catch (e) {}
       } catch (e) {}
 
       // Automatically sync student registeredEventIds state with processed scores
       setStudents(prev => {
-        const enriched = prev.map(st => {
-          const combinedRegs = getStudentRegisteredEventIds(st, processedList);
-          if ((st.registeredEventIds?.length || 0) === combinedRegs.length && combinedRegs.every(id => st.registeredEventIds?.includes(id))) {
-            return st;
+        const enriched = enrichStudentsWithRegisteredEventIds(prev, processedList);
+        enriched.forEach((st, i) => {
+          if (st !== prev[i]) {
+            // Persist new registeredEventIds back to Firestore so next reload shows correct count
+            dbSaveStudent(st).catch(() => {});
           }
-          return { ...st, registeredEventIds: combinedRegs };
         });
         studentsRef.current = enriched;
         return enriched;
@@ -385,11 +392,18 @@ export default function App() {
 
     const unsubEvents = subscribeEvents((fbEvents) => {
       if (fbEvents && fbEvents.length > 0) {
-        setEvents(fbEvents);
-        eventsRef.current = fbEvents;
-        localStorage.setItem('gcu_events_cache', JSON.stringify(fbEvents));
+        // Merge: if a locally-edited event is still "pending" (Firestore hasn't confirmed our write yet),
+        // keep the local version so the Firestore echo / stale cascade write can't revert it.
+        const pending = pendingEventEditsRef.current;
+        const merged = fbEvents.map(fbEvt => {
+          const localEdit = pending.get(fbEvt.id);
+          return localEdit ?? fbEvt;
+        });
+        setEvents(merged);
+        eventsRef.current = merged;
+        try { localStorage.setItem('gcu_events_cache', JSON.stringify(merged)); } catch (e) {}
         if (rawScoresRef.current.length > 0) {
-          processAndSetScores(rawScoresRef.current, fbEvents);
+          processAndSetScores(rawScoresRef.current, merged);
         }
       }
     });
@@ -550,6 +564,10 @@ export default function App() {
               ...match,
               registeredEventIds: combinedRegs
             };
+          } else {
+            // Student was deleted from Firestore - clear stale session to break continuous loop!
+            localStorage.removeItem('fresherism_active_student_id');
+            return null;
           }
         }
         return prev;
@@ -659,9 +677,13 @@ export default function App() {
   }, []);
 
   // Sync helpers
-  const saveEvents = (newEvents: Event[]) => {
+  // Only write the explicitly-changed events to Firestore — never re-write the whole list.
+  // Writing the full list was the root cause of edited descriptions being overwritten when
+  // any unrelated event was added or when a stale in-memory snapshot triggered a bulk write.
+  const saveEvents = (newEvents: Event[], changedEvents?: Event[]) => {
     setEvents(newEvents);
-    newEvents.forEach(e => dbSaveEvent(e));
+    const toWrite = changedEvents ?? newEvents;
+    toWrite.forEach(e => dbSaveEvent(e));
   };
 
   const saveStudents = async (newStudents: Student[], changedOnly: Student[]) => {
@@ -679,13 +701,12 @@ export default function App() {
     const normReg = student.registerNo ? student.registerNo.trim().toUpperCase() : '';
     const exists = students.some(s => s.registerNo && s.registerNo.trim().toUpperCase() === normReg);
     
-    let newStudentsList = students;
     if (exists) {
-      newStudentsList = students.map(s => (s.registerNo && s.registerNo.trim().toUpperCase() === normReg) ? student : s);
-    } else {
-      newStudentsList = [...students, student];
+      // If student already exists, ignore to prevent overwriting complete profiles with sparse data added by faculty
+      return;
     }
     
+    const newStudentsList = [...students, student];
     await saveStudents(newStudentsList, [student]);
   };
 
@@ -763,8 +784,29 @@ export default function App() {
 
     setScores(deduped);
     try {
-      localStorage.setItem('gcu_scores_cache', JSON.stringify(deduped));
+      try { localStorage.setItem('gcu_scores_cache', JSON.stringify(deduped)); } catch (e) {}
     } catch (e) {}
+
+    // Re-enrich all students' registeredEventIds now that scores have changed
+    setStudents(prev => {
+      const enriched = prev.map(st => {
+        const combinedRegs = getStudentRegisteredEventIds(st, deduped);
+        const existingSet = new Set(st.registeredEventIds || []);
+        const isSame = combinedRegs.length === existingSet.size && combinedRegs.every(id => existingSet.has(id));
+        if (isSame) return st;
+        const updated = { ...st, registeredEventIds: combinedRegs };
+        // Persist updated registeredEventIds back to Firestore
+        dbSaveStudent(updated).catch(() => {});
+        return updated;
+      });
+      studentsRef.current = enriched;
+      return enriched;
+    });
+    setActiveStudent(prev => {
+      if (!prev) return null;
+      const combinedRegs = getStudentRegisteredEventIds(prev, deduped);
+      return { ...prev, registeredEventIds: combinedRegs };
+    });
   };
 
   const saveNotifications = (newNotifs: Notification[]) => {
@@ -809,11 +851,214 @@ export default function App() {
   // Convenor: Delete Student Account Data
   const handleDeleteStudent = async (registerNo: string) => {
     try {
-      await dbDeleteStudent(registerNo);
-      setStudents(prev => prev.filter(s => s.registerNo !== registerNo));
+      const cleanReg = (registerNo || '').trim().toUpperCase();
+      await dbDeleteStudent(cleanReg);
+      setStudents(prev => prev.filter(s => s.registerNo?.trim().toUpperCase() !== cleanReg));
+      setScores(prev => prev.filter(s => s.studentRegisterNo?.trim().toUpperCase() !== cleanReg));
+      setActiveStudent(prev => {
+        if (prev && prev.registerNo?.trim().toUpperCase() === cleanReg) {
+          localStorage.removeItem('fresherism_active_student_id');
+          return null;
+        }
+        return prev;
+      });
     } catch (err) {
       console.error('Error deleting student:', err);
     }
+  };
+
+  /**
+   * Convenor: Correct student register numbers in bulk.
+   * For each correction: saves student under new registerNo, migrates all
+   * Score records from old→new, then deletes the old student document.
+   */
+  const handleCorrectStudentRegisterNos = async (corrections: RegisterNoCorrection[]): Promise<{
+    successCount: number;
+    failedRows: string[];
+  }> => {
+    const failedRows: string[] = [];
+    let successCount = 0;
+
+    // Process in chunks of 20 to speed up execution while preventing overwhelming the DB
+    const chunkSize = 20;
+    
+    // We'll collect state updates to apply them all at once at the very end to avoid multiple re-renders
+    const stateUpdates = {
+      updatedStudentsMap: new Map<string, Student>(),
+      deletedStudentRegs: new Set<string>(),
+      migratedScores: [] as Score[],
+      deletedScoreIds: new Set<string>()
+    };
+
+    for (let i = 0; i < corrections.length; i += chunkSize) {
+      const chunk = corrections.slice(i, i + chunkSize);
+      
+      await Promise.all(chunk.map(async ({ oldRegisterNo, newRegisterNo, name }) => {
+      try {
+        const oldReg = oldRegisterNo.trim().toUpperCase();
+        const newReg = newRegisterNo.trim().toUpperCase();
+
+        // Find the existing student
+        const existing = students.find(s => s.registerNo?.trim().toUpperCase() === oldReg);
+        if (!existing) {
+          failedRows.push(`${name} (${oldReg}) — student not found in system`);
+          return;
+        }
+
+        // Check new register number is not already taken by a DIFFERENT student
+        const collision = students.find(
+          s => s.registerNo?.trim().toUpperCase() === newReg &&
+               s.registerNo?.trim().toUpperCase() !== oldReg
+        );
+        if (collision) {
+          failedRows.push(`${name} (${oldReg}→${newReg}) — new register no already belongs to ${collision.name}`);
+          return;
+        }
+
+        // 1. Save student with corrected register number
+        const correctedStudent: Student = { ...existing, registerNo: newReg };
+        const saveResult = await dbSaveStudent(correctedStudent);
+        if (!saveResult.ok) {
+          failedRows.push(`${name} (${oldReg}→${newReg}) — save failed: ${saveResult.reason}`);
+          return;
+        }
+
+        // 2. Migrate all Score records from old registerNo to new registerNo
+        const studentScores = scores.filter(
+          s => s.studentRegisterNo?.trim().toUpperCase() === oldReg
+        );
+        for (const sc of studentScores) {
+          const newScoreId = `${newReg}_${sc.eventId}`.replace(/\//g, '_');
+          const migratedScore: Score = {
+            ...sc,
+            id: newScoreId,
+            studentRegisterNo: newReg,
+          };
+          await dbSaveScore(migratedScore);
+          // Delete old score doc if id changed
+          if (sc.id && sc.id !== newScoreId) {
+            await dbDeleteScore(sc.id, true).catch(() => {});
+          }
+        }
+
+        // 3. Delete the old student document
+        await dbDeleteStudent(oldReg).catch(() => {});
+
+        // 4. Queue local state updates instead of applying immediately
+        stateUpdates.updatedStudentsMap.set(oldReg, correctedStudent);
+        stateUpdates.deletedStudentRegs.add(oldReg);
+        
+        for (const sc of studentScores) {
+          const newScoreId = `${newReg}_${sc.eventId}`.replace(/\//g, '_');
+          stateUpdates.migratedScores.push({ ...sc, id: newScoreId, studentRegisterNo: newReg });
+          if (sc.id && sc.id !== newScoreId) {
+            stateUpdates.deletedScoreIds.add(sc.id);
+          }
+        }
+
+        successCount++;
+        console.log(`✅ Register No corrected: ${oldReg} → ${newReg} (${name})`);
+      } catch (err: any) {
+        console.error(`Error correcting register no for ${name}:`, err);
+        failedRows.push(`${name} (${oldRegisterNo}→${newRegisterNo}) — ${err?.message || 'Unknown error'}`);
+      }
+    }));
+    }
+
+    // Apply all state updates in one single batch to prevent massive UI freezing/re-renders
+    if (successCount > 0) {
+      setStudents(prev => prev.map(s => {
+        const up = s.registerNo ? stateUpdates.updatedStudentsMap.get(s.registerNo.trim().toUpperCase()) : undefined;
+        return up ? up : s;
+      }));
+
+      setScores(prev => {
+        const remainingScores = prev.filter(sc => !sc.id || !stateUpdates.deletedScoreIds.has(sc.id));
+        
+        // Remove scores that match the old register numbers since we have new migrated ones
+        const filteredRemaining = remainingScores.filter(sc => 
+          !(sc.studentRegisterNo && stateUpdates.deletedStudentRegs.has(sc.studentRegisterNo.trim().toUpperCase()))
+        );
+        
+        return [...filteredRemaining, ...stateUpdates.migratedScores];
+      });
+    }
+
+    return { successCount, failedRows };
+  };
+
+  /**
+   * Convenor: Assign / Update student USN numbers in bulk from uploaded Excel sheet.
+   * Updates student records and cascades USN to all corresponding score documents in Firestore & state.
+   */
+  const handleAssignStudentUsnNos = async (
+    updates: StudentUsnUpdate[],
+    corrections?: RegisterNoCorrection[]
+  ): Promise<{ successCount: number; failedRows: string[] }> => {
+    const failedRows: string[] = [];
+    let successCount = 0;
+
+    // 1. Process any register number corrections first if present
+    if (corrections && corrections.length > 0) {
+      const regRes = await handleCorrectStudentRegisterNos(corrections);
+      if (regRes.failedRows.length > 0) {
+        failedRows.push(...regRes.failedRows);
+      }
+    }
+
+    // 2. Process USN updates
+    const studentsToSave: Student[] = [];
+    const scoresToSave: Score[] = [];
+    let workingStudents = [...students];
+    let workingScores = [...scores];
+
+    for (const update of updates) {
+      try {
+        const cleanReg = update.registerNo.trim().toUpperCase();
+        const cleanUsn = update.usnNo.trim().toUpperCase();
+
+        const student = workingStudents.find(
+          s => s.registerNo && s.registerNo.trim().toUpperCase() === cleanReg
+        );
+
+        if (!student) {
+          failedRows.push(`${update.name} (${cleanReg}) — student not found in system`);
+          continue;
+        }
+
+        const updatedStudent: Student = {
+          ...student,
+          usnNo: cleanUsn
+        };
+        studentsToSave.push(updatedStudent);
+        workingStudents = workingStudents.map(s => s.registerNo === updatedStudent.registerNo ? updatedStudent : s);
+
+        // Update all score records for this student
+        const studentScores = workingScores.filter(
+          s => s.studentRegisterNo && s.studentRegisterNo.trim().toUpperCase() === cleanReg
+        );
+        for (const sc of studentScores) {
+          const updatedScore: Score = {
+            ...sc,
+            usnNo: cleanUsn
+          };
+          scoresToSave.push(updatedScore);
+          workingScores = workingScores.map(s => s.id === updatedScore.id ? updatedScore : s);
+        }
+
+        successCount++;
+      } catch (err: any) {
+        failedRows.push(`${update.name} (${update.registerNo}) — error: ${err?.message || 'unknown'}`);
+      }
+    }
+
+    if (studentsToSave.length > 0 || scoresToSave.length > 0) {
+      await dbSaveStudentsAndScoresBatch(studentsToSave, scoresToSave);
+      setStudents(workingStudents);
+      setScores(workingScores);
+    }
+
+    return { successCount, failedRows };
   };
 
   // Coordinator: Register new faculty coordinator or update profile
@@ -875,9 +1120,19 @@ export default function App() {
 
   // Convenor: Update an event completely or partially
   const handleUpdateEvent = (updatedEvent: Event) => {
-    // 1. Update React local state & Firestore DB for events
+    // 1. Update React local state & eventsRef immediately (prevents stale-closure writes from reverting)
     const updatedEvents = events.map(e => e.id === updatedEvent.id ? updatedEvent : e);
     setEvents(updatedEvents);
+    eventsRef.current = updatedEvents;
+
+    // 2. Register as a pending local edit so the Firestore echo can't revert it
+    pendingEventEditsRef.current.set(updatedEvent.id, updatedEvent);
+    // Clear the pending mark 8 seconds after save — Firestore round-trip is always well under that
+    setTimeout(() => {
+      pendingEventEditsRef.current.delete(updatedEvent.id);
+    }, 8000);
+
+    // 3. Persist to Firestore
     dbSaveEvent(updatedEvent).catch(err => console.error('Error saving updated event:', err));
 
     // 2. Sync with facultyCoordinators directory so auto-reconcile doesn't revert coordinator name
@@ -931,7 +1186,7 @@ export default function App() {
     const updatedScores = scores.filter(s => s.eventId !== eventId);
     setScores(updatedScores);
     try {
-      localStorage.setItem('gcu_scores_cache', JSON.stringify(updatedScores));
+      try { localStorage.setItem('gcu_scores_cache', JSON.stringify(updatedScores)); } catch (e) {}
     } catch (e) {}
 
     const updatedStudents = students.map(s => ({
@@ -983,6 +1238,7 @@ export default function App() {
         school: newStudent.school || oldStudent.school || 'Garden City University',
         department: newStudent.department || oldStudent.department || '',
         programName: newStudent.programName || oldStudent.programName || '',
+        tShirtSize: newStudent.tShirtSize || oldStudent.tShirtSize,
         externalCollegeName: newStudent.externalCollegeName || oldStudent.externalCollegeName || '',
         isProfileComplete: newStudent.isProfileComplete || oldStudent.isProfileComplete || false,
         registeredEventIds: Array.from(new Set([...(oldStudent.registeredEventIds || []), ...(newStudent.registeredEventIds || [])]))
@@ -1069,7 +1325,7 @@ export default function App() {
 
   // Join or leave event dynamically
   // Register for event
-  const handleRegisterForEvent = async (studentRegNo: string, eventId: string) => {
+  const handleRegisterForEvent = async (studentRegNo: string, eventId: string, tShirtSize?: string) => {
     try {
       const normTarget = studentRegNo ? studentRegNo.trim().toLowerCase() : '';
       const currentStudent = students.find(s =>
@@ -1092,12 +1348,30 @@ export default function App() {
       const isAlreadyRegistered = currentRegs.includes(eventId);
 
       if (isAlreadyRegistered) {
-        console.warn('Student already registered for this event');
+        if (tShirtSize && currentStudent.tShirtSize !== tShirtSize) {
+          const updatedWithTShirt = { ...currentStudent, tShirtSize };
+          setActiveStudent(updatedWithTShirt);
+          setStudents(prev => prev.map(s =>
+            (s.uid && updatedWithTShirt.uid && s.uid === updatedWithTShirt.uid) ||
+            (s.registerNo && updatedWithTShirt.registerNo && s.registerNo === updatedWithTShirt.registerNo) ||
+            (s.email && updatedWithTShirt.email && s.email === updatedWithTShirt.email)
+              ? updatedWithTShirt
+              : s
+          ));
+          dbSaveStudent(updatedWithTShirt).catch(console.warn);
+        }
         return;
       }
 
       // Create new score record
       const event = events.find(e => e.id === eventId);
+
+      // --- SERVER-SIDE REGISTRATION CLOSED GUARD ---
+      // This is the authoritative check. StudentDashboard has a UI-level check,
+      // but direct calls (QR scan, notification click, Freshathon modal) bypassed it.
+      if (event && isEventRegistrationClosed(event)) {
+        throw new Error(`Registration for "${event.title}" is closed.`);
+      }
       const newScore: Score = {
         id: `${regIdentifier}_${eventId}`.replace(/\//g, '_'),
         studentRegisterNo: regIdentifier,
@@ -1122,8 +1396,13 @@ export default function App() {
 
       // Local React state update
       const newRegs = Array.from(new Set([...currentRegs, eventId]));
-      const updatedStudent = { ...currentStudent, registeredEventIds: newRegs };
+      const updatedStudent = { 
+        ...currentStudent, 
+        registeredEventIds: newRegs,
+        ...(tShirtSize ? { tShirtSize } : {})
+      };
 
+      await dbSaveStudent(updatedStudent);
       setActiveStudent(updatedStudent);
       setStudents(prev => {
         const exists = prev.some(s =>
@@ -1203,7 +1482,7 @@ export default function App() {
       const updatedScores = scores.filter(s => !scoresToDelete.includes(s));
       setScores(updatedScores);
       try {
-        localStorage.setItem('gcu_scores_cache', JSON.stringify(updatedScores));
+        try { localStorage.setItem('gcu_scores_cache', JSON.stringify(updatedScores)); } catch (e) {}
       } catch (e) {}
 
       // Atomic unregistration write to Firestore
@@ -1247,7 +1526,7 @@ export default function App() {
 
   // Create Event manually
   const handleAddEvent = (newEvent: Event) => {
-    saveEvents([...events, newEvent]);
+    saveEvents([...events, newEvent], [newEvent]);
 
     if (newEvent.coordinatorName && (newEvent.coordinatorEmail || newEvent.coordinatorFacultyId)) {
       const cleanEmail = (newEvent.coordinatorEmail || '').toLowerCase().trim();
@@ -1343,6 +1622,15 @@ export default function App() {
 
   // Reschedule event
   const handleUpdateEventSchedule = (eventId: string, date: string, timeStart: string, timeEnd: string, venue: string) => {
+    let isoDate = date || '';
+    const ddmmMatch = date.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})/);
+    if (ddmmMatch) {
+      const [, dd, mm, yyyy] = ddmmMatch;
+      isoDate = `${yyyy}-${mm.padStart(2, '0')}-${dd.padStart(2, '0')}`;
+    }
+    const todayISO = new Date().toISOString().slice(0, 10);
+    const isFutureDate = isoDate > todayISO;
+
     const updatedEvents = events.map(evt => {
       if (evt.id === eventId) {
         return {
@@ -1350,12 +1638,26 @@ export default function App() {
           date,
           timeStart,
           timeEnd,
-          venue
+          venue,
+          // When date is rescheduled to a future date, clear any past completion/closure flags so registration re-opens!
+          ...(isFutureDate ? {
+            isCompleted: false,
+            reportedToConvenor: false,
+            resultsPublished: false,
+            isRegistrationClosed: false,
+            registrationClosed: false,
+            status: 'upcoming'
+          } : {})
         };
       }
       return evt;
     });
-    saveEvents(updatedEvents);
+    saveEvents(updatedEvents, updatedEvents.filter(e => {
+      const orig = events.find(o => o.id === e.id);
+      return !orig || orig.isCompleted !== e.isCompleted ||
+        orig.isRegistrationClosed !== e.isRegistrationClosed ||
+        orig.registrationClosed !== e.registrationClosed;
+    }));
   };
 
   // Update scores
@@ -1438,6 +1740,13 @@ export default function App() {
         onClearNotifications={handleClearAllNotifications}
         onOpenEvent={(eventId) => {
           if (activeStudent && activeStudent.isProfileComplete) {
+            const evt = events.find(e => e.id === eventId);
+            if (evt && isEventRegistrationClosed(evt)) {
+              alert(`⚠️ Cannot register: Registration for "${evt.title}" is closed.`);
+              setActiveRole('student');
+              setSelectedEventIdNav(eventId);
+              return;
+            }
             setActiveRole('student');
             setSelectedEventIdNav(eventId);
             handleRegisterForEvent(activeStudent.registerNo, eventId).catch(console.warn);
@@ -1685,7 +1994,10 @@ export default function App() {
             onApproveCoordinator={handleApproveCoordinator}
             onDeleteCoordinator={handleDeleteCoordinator}
             onDeleteStudent={handleDeleteStudent}
+            onAssignStudentUsnNos={handleAssignStudentUsnNos}
+            onCorrectStudentRegisterNos={handleCorrectStudentRegisterNos}
             onRegisterCoordinator={handleRegisterCoordinator}
+            onUpdateScores={handleUpdateScores}
             onGoToLanding={() => {
               setActiveRole('landing');
               window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1844,10 +2156,20 @@ export default function App() {
         activeStudent={activeStudent}
         isLandingPage={activeRole === 'landing'}
         events={events}
-        onRegisterForEvent={(eventId) => {
+        onRegisterForEvent={(eventId, tShirtSize) => {
           if (activeStudent) {
-            handleRegisterForEvent(activeStudent.registerNo, eventId);
+            const evt = events.find(e => e.id === eventId);
+            if (evt && isEventRegistrationClosed(evt)) {
+              alert(`⚠️ Cannot register: Registration for "${evt.title}" is closed.`);
+              return;
+            }
+            handleRegisterForEvent(activeStudent.registerNo, eventId, tShirtSize);
           }
+        }}
+        onUpdateStudentProfile={(updatedStudent) => {
+          dbSaveStudent(updatedStudent);
+          setActiveStudent(updatedStudent);
+          setStudents(prev => prev.map(s => s.registerNo === updatedStudent.registerNo ? updatedStudent : s));
         }}
         onRequireSignIn={handleRequireStudentSignIn}
       />

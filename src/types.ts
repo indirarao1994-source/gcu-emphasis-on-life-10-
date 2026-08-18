@@ -5,6 +5,7 @@
 
 export interface StudentMasterRecord {
   registerNo: string;
+  usnNo?: string;
   name: string;
   email: string;
   department: string;
@@ -56,6 +57,7 @@ export interface Event {
   brochureUrl?: string;
   eventType?: 'individual' | 'group'; // Defaults to 'individual' if undefined
   isCompleted?: boolean; // Flagged when coordinator marks "Event Completed"
+  reportSubmitted?: boolean; // Flagged when coordinator submits the final event report
   reportedToConvenor?: boolean; // Flagged when coordinator reports completion to convenor
   resultsPublished?: boolean; // Flagged when Convenor approves and publishes scores to Leaderboard ("Yes Update Results")
   resultsPublishedAt?: string; // Timestamp when Convenor approved and published results
@@ -79,6 +81,7 @@ export interface Event {
   externalJudgeEmail?: string;
   externalJudgeMobile?: string;
   aiSummaryReport?: string; // AI generated report content
+  hasPendingUpdates?: boolean; // Flagged when coordinator updates scores for an already published event
 }
 
 export interface GroupRegistrationInfo {
@@ -89,6 +92,7 @@ export interface GroupRegistrationInfo {
 export interface Student {
   uid?: string;
   registerNo: string;
+  usnNo?: string;
   name: string;
   mobile: string;
   email: string;
@@ -108,6 +112,7 @@ export interface Student {
   isSeniorAcknowledged?: boolean;
   isNccInterested?: boolean;
   nccRegisteredAt?: string;
+  tShirtSize?: string;
 }
 
 export interface FacultyCoordinator {
@@ -142,6 +147,7 @@ export interface Notification {
 export interface Score {
   id: string; // "studentRegisterNo_eventId"
   studentRegisterNo: string;
+  usnNo?: string;
   studentName: string;
   eventId: string;
   eventTitle: string;
@@ -160,6 +166,17 @@ export interface Score {
   basePoints?: number; // Backward compatibility
   performanceScore?: number; // Backward compatibility
   isGroupScore?: boolean;
+  pendingUpdate?: {
+    eventScore: number;
+    totalScore: number;
+    criterion1?: number;
+    criterion2?: number;
+    criterion3?: number;
+    criterion4?: number;
+    participationMarks?: number;
+    participated: boolean;
+    isWinner: boolean;
+  };
 }
 
 export type UserRole = 'convenor' | 'coordinator' | 'student' | 'superadmin';
@@ -186,26 +203,6 @@ export interface ClashRequest {
   message: string;
   timestamp: string;
   status?: 'pending' | 'allowed' | 'rejected';
-}
-
-function isLevenshteinSimilar(str1: string, str2: string): boolean {
-  if (str1 === str2) return true;
-  if (Math.abs(str1.length - str2.length) > 2) return false;
-  let diff = 0;
-  let i = 0, j = 0;
-  while (i < str1.length && j < str2.length) {
-    if (str1[i] !== str2[j]) {
-      diff++;
-      if (diff > 2) return false;
-      if (str1.length > str2.length) i++;
-      else if (str2.length > str1.length) j++;
-      else { i++; j++; }
-    } else {
-      i++; j++;
-    }
-  }
-  diff += (str1.length - i) + (str2.length - j);
-  return diff <= 2;
 }
 
 export function normalizeRegisterNo(regNo?: string): string {
@@ -287,6 +284,62 @@ export function getStudentRegisteredEventIds(student?: Student | null, allScores
   return Array.from(eventIdsSet);
 }
 
+export function enrichStudentsWithRegisteredEventIds(students: Student[], allScores: Score[] = []): Student[] {
+  if (!students || students.length === 0) return [];
+  if (!allScores || allScores.length === 0) return students;
+
+  // 1. Build a multi-key lookup index from scores for O(1) matching
+  const scoreEventIdsByReg = new Map<string, Set<string>>();
+  const addScore = (key: string, eventId: string) => {
+    if (!key) return;
+    const k = key.trim().toLowerCase();
+    if (!k) return;
+    if (!scoreEventIdsByReg.has(k)) scoreEventIdsByReg.set(k, new Set());
+    scoreEventIdsByReg.get(k)!.add(eventId);
+  };
+
+  allScores.forEach(sc => {
+    if (!sc.eventId) return;
+    const scReg = sc.studentRegisterNo ? sc.studentRegisterNo.trim().toLowerCase() : '';
+    if (scReg) {
+      addScore(scReg, sc.eventId);
+      const local = scReg.includes('@') ? scReg.split('@')[0] : scReg;
+      if (local !== scReg) addScore(local, sc.eventId);
+    }
+    if (sc.usnNo) addScore(sc.usnNo, sc.eventId);
+  });
+
+  // 2. Map over students using the O(1) index
+  return students.map(st => {
+    const eventIdsSet = new Set<string>(st.registeredEventIds || []);
+    
+    const checkAndAdd = (key?: string) => {
+      if (!key) return;
+      const set = scoreEventIdsByReg.get(key.trim().toLowerCase());
+      if (set) set.forEach(eid => eventIdsSet.add(eid));
+    };
+
+    checkAndAdd(st.registerNo);
+    checkAndAdd(st.email);
+    if (st.email) checkAndAdd(st.email.split('@')[0]);
+    checkAndAdd(st.uid);
+    checkAndAdd(st.usnNo);
+
+    const newRegs = Array.from(eventIdsSet);
+    
+    // Only return new object if lengths differ or items differ
+    const existingSet = new Set(st.registeredEventIds || []);
+    const isSame = newRegs.length === existingSet.size && newRegs.every(id => existingSet.has(id));
+    if (isSame) return st;
+    
+    return {
+      ...st,
+      registeredEventIds: newRegs
+    };
+  });
+}
+
+
 export function isStudentRegisteredForEvent(
   student: Student,
   targetEvent: Event,
@@ -315,18 +368,7 @@ export function isStudentRegisteredForEvent(
     return true;
   }
 
-  // 2. Score record check
-  if (allScores.length > 0) {
-    const normReg = student.registerNo ? student.registerNo.trim().toUpperCase() : '';
-    const normEmail = student.email ? student.email.trim().toLowerCase() : '';
-    const hasScore = allScores.some(sc => 
-      matchingEventIds.has(sc.eventId) && (
-        (normReg && sc.studentRegisterNo && sc.studentRegisterNo.trim().toUpperCase() === normReg) ||
-        (normEmail && sc.studentRegisterNo && sc.studentRegisterNo.trim().toLowerCase() === normEmail)
-      )
-    );
-    if (hasScore) return true;
-  }
+  // 2. Score record check is NO LONGER needed here as App.tsx enriches student.registeredEventIds using enrichStudentsWithRegisteredEventIds.
 
   return false;
 }
@@ -369,24 +411,31 @@ export function extractEmailFromUser(user: any): string {
 
 export function findStudentMatch(
   studentsList: Student[],
-  target: { uid?: string; email?: string; registerNo?: string }
+  target: { uid?: string; email?: string; registerNo?: string; usnNo?: string }
 ): Student | undefined {
   if (!studentsList || studentsList.length === 0) return undefined;
 
   const targetUid = target.uid ? target.uid.trim() : '';
   const targetEmail = target.email ? target.email.trim().toLowerCase() : '';
   const targetRegNo = target.registerNo ? target.registerNo.trim().toLowerCase() : '';
+  const targetUsn = target.usnNo ? target.usnNo.trim().toLowerCase() : '';
 
   const emailLocal = targetEmail ? targetEmail.split('@')[0] : '';
   const strippedEmailLocal = emailLocal ? emailLocal.replace(/^(\d{2})([a-zA-Z])/, '$2') : '';
 
-  return studentsList.find(s => {
+  const matches = studentsList.filter(s => {
     if (!s) return false;
     const sUid = s.uid ? s.uid.trim() : '';
     const sEmail = s.email ? s.email.trim().toLowerCase() : '';
     const sRegNo = s.registerNo ? s.registerNo.trim().toLowerCase() : '';
+    const sUsn = s.usnNo ? s.usnNo.trim().toLowerCase() : '';
     const sEmailLocal = sEmail ? sEmail.split('@')[0] : '';
     const sStrippedEmailLocal = sEmailLocal ? sEmailLocal.replace(/^(\d{2})([a-zA-Z])/, '$2') : '';
+
+    // 0. USN exact match (highest fidelity)
+    if (targetUsn && sUsn && targetUsn === sUsn) return true;
+    if (targetUsn && sRegNo && targetUsn === sRegNo) return true;
+    if (targetRegNo && sUsn && targetRegNo === sUsn) return true;
 
     // 1. UID exact match
     if (targetUid && sUid && targetUid === sUid) return true;
@@ -408,6 +457,20 @@ export function findStudentMatch(
 
     return false;
   });
+
+  if (matches.length === 0) return undefined;
+  if (matches.length === 1) return matches[0];
+
+  // If duplicate documents exist, prefer completed profile with registered events
+  return matches.sort((a, b) => {
+    const aComplete = a.isProfileComplete ? 1 : 0;
+    const bComplete = b.isProfileComplete ? 1 : 0;
+    if (bComplete !== aComplete) return bComplete - aComplete;
+
+    const aRegs = (a.registeredEventIds || []).length;
+    const bRegs = (b.registeredEventIds || []).length;
+    return bRegs - aRegs;
+  })[0];
 }
 
 export function isMatchingEmail(email1?: string, email2?: string): boolean {
@@ -420,27 +483,5 @@ export function isMatchingEmail(email1?: string, email2?: string): boolean {
   const local2 = e2.split('@')[0];
   if (local1 === local2) return true;
 
-  // Split into tokens like 'a', 'gnansundari', 'gnanasundari'
-  const tokens1 = local1.split(/[._-]/).filter(Boolean).sort();
-  const tokens2 = local2.split(/[._-]/).filter(Boolean).sort();
-
-  if (tokens1.length === tokens2.length) {
-    let allMatch = true;
-    for (let i = 0; i < tokens1.length; i++) {
-      if (tokens1[i] !== tokens2[i] && !isLevenshteinSimilar(tokens1[i], tokens2[i])) {
-        allMatch = false;
-        break;
-      }
-    }
-    if (allMatch) return true;
-  }
-
-  const long1 = tokens1.find(t => t.length >= 5);
-  const long2 = tokens2.find(t => t.length >= 5);
-  if (long1 && long2 && isLevenshteinSimilar(long1, long2)) {
-    return true;
-  }
-
   return false;
 }
-

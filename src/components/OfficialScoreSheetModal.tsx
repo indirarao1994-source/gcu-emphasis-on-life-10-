@@ -1,7 +1,13 @@
 import React from 'react';
 import { Event, Student, Score } from '../types';
 import { Printer, Download, X } from 'lucide-react';
-import { downloadMarksExcel } from './ExcelHelper';
+import {
+  downloadMarksExcel,
+  exportRegisteredStudentsList,
+  exportParticipationList,
+  exportNotParticipantsList,
+  exportParticipantsScores
+} from './ExcelHelper';
 
 interface OfficialScoreSheetModalProps {
   event: Event;
@@ -59,43 +65,75 @@ export const OfficialScoreSheetModal: React.FC<OfficialScoreSheetModalProps> = (
         }
       `}</style>
 
-      <div className="bg-white text-slate-900 w-full max-w-5xl rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[95vh] border border-zinc-300">
+      <div className="bg-white text-slate-900 w-full max-w-6xl rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[95vh] border border-zinc-300">
         
         {/* Action Header - Web only */}
-        <div className="no-print bg-zinc-900 text-white px-6 py-4 flex items-center justify-between border-b border-zinc-800 shrink-0">
+        <div className="no-print bg-zinc-900 text-white px-6 py-4 flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-zinc-800 shrink-0">
           <div>
             <h2 className="text-base font-black tracking-tight flex items-center gap-2">
               <Printer className="w-5 h-5 text-[#00D1FF]" />
-              Official GCU Event Scoring Sheet Preview
+              Official GCU Event Scoring Sheet & Reports
             </h2>
             <p className="text-xs text-zinc-400">
-              Matches official Garden City University physical scoring sheet format. Click Print / PDF to generate printout.
+              Matches official Garden City University physical scoring sheet format with 1-click report exports.
             </p>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={handlePrint}
-              className="bg-gradient-to-r from-[#00D1FF] to-blue-600 hover:opacity-90 text-slate-950 font-black px-4 py-2 rounded-xl text-xs flex items-center gap-2 transition-all cursor-pointer shadow-lg"
+              className="bg-gradient-to-r from-[#00D1FF] to-blue-600 hover:opacity-90 text-slate-950 font-black px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-lg"
+              title="Print official paper score sheet for judges"
             >
               <Printer className="w-4 h-4" />
-              <span>Print / Save PDF</span>
+              <span>Print / PDF</span>
             </button>
 
             <button
               type="button"
-              onClick={() => downloadMarksExcel(event, registeredStudents, scores, occasionTitle)}
-              className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2 rounded-xl text-xs flex items-center gap-2 transition-all cursor-pointer shadow-lg"
+              onClick={() => exportRegisteredStudentsList(event, registeredStudents, scores)}
+              className="bg-purple-600 hover:bg-purple-500 text-white font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-md"
+              title="Download Registered Students List (.xlsx)"
             >
-              <Download className="w-4 h-4" />
-              <span>Download Excel (.xlsx)</span>
+              <Download className="w-3.5 h-3.5" />
+              <span>Registered Students</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => exportParticipationList(event, registeredStudents, scores)}
+              className="bg-teal-600 hover:bg-teal-500 text-white font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-md"
+              title="Download Participation List (Present) (.xlsx)"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Participation List</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => exportNotParticipantsList(event, registeredStudents, scores)}
+              className="bg-amber-600 hover:bg-amber-500 text-white font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-md"
+              title="Download Not Participants List (Absent) (.xlsx)"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Not Participants</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => exportParticipantsScores(event, registeredStudents, scores)}
+              className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-md"
+              title="Download Scores of Participants (.xlsx)"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Scores Breakdown</span>
             </button>
 
             <button
               type="button"
               onClick={onClose}
-              className="p-2 hover:bg-zinc-800 rounded-xl text-zinc-400 hover:text-white transition-colors cursor-pointer"
+              className="p-2 hover:bg-zinc-800 rounded-xl text-zinc-400 hover:text-white transition-colors cursor-pointer ml-1"
             >
               <X className="w-5 h-5" />
             </button>
@@ -153,6 +191,7 @@ export const OfficialScoreSheetModal: React.FC<OfficialScoreSheetModalProps> = (
                 <tr className="bg-slate-100 border-b border-black">
                   <th className="border border-black p-2 font-bold w-10">Sl No</th>
                   <th className="border border-black p-2 font-bold w-24">Register number</th>
+                  <th className="border border-black p-2 font-bold w-24">USN NO</th>
                   <th className="border border-black p-2 font-bold text-left">Name of the student</th>
                   <th className="border border-black p-2 font-bold w-24">Mobile Number</th>
                   <th className="border border-black p-2 font-bold w-16">Register Pts</th>
@@ -200,6 +239,7 @@ export const OfficialScoreSheetModal: React.FC<OfficialScoreSheetModalProps> = (
                     <tr key={idx} className="border-b border-black h-8">
                       <td className="border border-black p-1">{idx + 1}</td>
                       <td className="border border-black p-1 font-mono">{student?.registerNo || ''}</td>
+                      <td className="border border-black p-1 font-mono">{student?.usnNo || sc?.usnNo || ''}</td>
                       <td className="border border-black p-1 text-left font-medium">{student?.name || ''}</td>
                       <td className="border border-black p-1 font-mono">{student?.mobile || ''}</td>
                       <td className="border border-black p-1 font-bold">{regPts}</td>

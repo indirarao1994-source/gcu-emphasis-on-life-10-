@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Occasion } from '../types';
-import { Plus, Edit2, Trash2, CheckCircle, Calendar, ShieldCheck, UserCheck, Mail, Sparkles, Building2, Upload, FileText, Download, Image as ImageIcon, FileCode } from 'lucide-react';
-import { generateSampleWordTemplateDocx, inspectDocxTemplate } from './DocxTemplateHelper';
+import { Plus, Edit2, Trash2, CheckCircle, Calendar, ShieldCheck, UserCheck, Mail, Sparkles, Building2, Upload, FileText, Download, Image as ImageIcon, FileCode, Key, Eye, EyeOff } from 'lucide-react';
+import { generateSampleWordTemplateDocx, inspectDocxTemplate, getGeminiApiKey, setGeminiApiKey, testGeminiApiKey } from './DocxTemplateHelper';
 import { formatDateDDMMYYYY, formatDateRangeDDMMYYYY } from '../dateUtils';
 
 interface SuperAdminDashboardProps {
@@ -28,6 +28,29 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
   const [showModal, setShowModal] = useState(false);
   const [editingOccasion, setEditingOccasion] = useState<Partial<Occasion> | null>(null);
   const [saveNotification, setSaveNotification] = useState<string | null>(null);
+  const [geminiKeyInput, setGeminiKeyInput] = useState<string>(() => getGeminiApiKey());
+  const [geminiTestStatus, setGeminiTestStatus] = useState<string>('');
+  const [isTestingKey, setIsTestingKey] = useState<boolean>(false);
+  const [showKeyVisible, setShowKeyVisible] = useState<boolean>(false);
+
+  const handleSaveGeminiKey = (key: string) => {
+    setGeminiApiKey(key);
+    setGeminiKeyInput(key);
+    setGeminiTestStatus('✅ Gemini API Key saved successfully to browser storage!');
+    setTimeout(() => setGeminiTestStatus(''), 3500);
+  };
+
+  const handleTestGeminiKey = async () => {
+    setIsTestingKey(true);
+    setGeminiTestStatus('Testing Gemini AI connection...');
+    const res = await testGeminiApiKey(geminiKeyInput);
+    setIsTestingKey(false);
+    if (res.success) {
+      setGeminiTestStatus(res.message);
+    } else {
+      setGeminiTestStatus('⚠️ ' + res.message);
+    }
+  };
 
   const handleOpenNew = () => {
     setEditingOccasion({
@@ -720,6 +743,69 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({
                   </div>
 
                 </div>
+              </div>
+
+              {/* 5B. Gemini AI Integration for Event Reports */}
+              <div className="bg-gradient-to-r from-blue-950/60 to-purple-950/60 p-4 rounded-2xl border border-blue-600/40 space-y-3 shadow-lg">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-black text-cyan-300 uppercase tracking-wider flex items-center gap-1.5">
+                    <Sparkles className="w-4 h-4 text-cyan-400 animate-pulse" />
+                    🤖 Gemini AI Key for Auto-Generating Report Objectives & Descriptions
+                  </span>
+                  {getGeminiApiKey() && (
+                    <span className="px-2 py-0.5 bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-black rounded-md">
+                      Configured ✓
+                    </span>
+                  )}
+                </div>
+
+                <p className="text-[11px] text-zinc-300 leading-relaxed">
+                  When coordinators click <strong className="text-cyan-300 font-bold">"Generate Report (.docx)"</strong>, Gemini AI automatically analyzes the event details and writes tailored academic objectives, executive descriptions, and key outcomes.
+                </p>
+
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <div className="relative flex-1">
+                    <Key className="w-3.5 h-3.5 text-zinc-400 absolute left-3 top-2.5" />
+                    <input
+                      type={showKeyVisible ? 'text' : 'password'}
+                      placeholder="AIzaSy... (Gemini API Key)"
+                      value={geminiKeyInput}
+                      onChange={(e) => setGeminiKeyInput(e.target.value)}
+                      className="w-full pl-9 pr-9 py-2 rounded-xl bg-black/60 border border-blue-500/40 text-white font-mono text-xs focus:outline-none focus:border-cyan-400"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowKeyVisible(!showKeyVisible)}
+                      className="absolute right-2.5 top-2.5 text-zinc-400 hover:text-white cursor-pointer"
+                      title={showKeyVisible ? 'Hide Key' : 'Show Key'}
+                    >
+                      {showKeyVisible ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => handleSaveGeminiKey(geminiKeyInput)}
+                    className="px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-black font-black text-xs rounded-xl shadow-md cursor-pointer transition-all"
+                  >
+                    Save Key
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={isTestingKey || !geminiKeyInput.trim()}
+                    onClick={handleTestGeminiKey}
+                    className="px-4 py-2 bg-purple-600/40 hover:bg-purple-600/70 border border-purple-400/50 text-purple-200 font-bold text-xs rounded-xl transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    {isTestingKey ? 'Testing...' : 'Test Connection'}
+                  </button>
+                </div>
+
+                {geminiTestStatus && (
+                  <div className={`p-2.5 rounded-xl text-xs font-semibold ${geminiTestStatus.includes('Successfully') || geminiTestStatus.includes('✅') ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'}`}>
+                    {geminiTestStatus}
+                  </div>
+                )}
               </div>
 
               {/* 6. Convenor & Capacity Options */}

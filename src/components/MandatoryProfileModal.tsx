@@ -33,6 +33,7 @@ export const MandatoryProfileModal: React.FC<MandatoryProfileModalProps> = ({
   const [school, setSchool] = useState(faculty?.school || student?.school || 'Garden City University');
   const [department, setDepartment] = useState(faculty?.department || student?.department || '');
   const [programName, setProgramName] = useState(student?.programName || '');
+  const [tShirtSize, setTShirtSize] = useState(student?.tShirtSize || 'M');
   const [externalCollegeName, setExternalCollegeName] = useState(student?.externalCollegeName || '');
   const [facultyId, setFacultyId] = useState(faculty?.facultyId || '');
   const [formError, setFormError] = useState('');
@@ -54,6 +55,7 @@ export const MandatoryProfileModal: React.FC<MandatoryProfileModalProps> = ({
       setSchool(student.school || 'Garden City University');
       setDepartment(student.department || '');
       setProgramName(student.programName || '');
+      setTShirtSize(student.tShirtSize || 'M');
       setExternalCollegeName(student.externalCollegeName || '');
     }
   }, [student, faculty]);
@@ -112,6 +114,7 @@ export const MandatoryProfileModal: React.FC<MandatoryProfileModalProps> = ({
         school: school.trim(),
         department: department.trim(),
         programName: programName.trim(),
+        tShirtSize: tShirtSize,
         externalCollegeName: externalCollegeName.trim(),
         isProfileComplete: true
       };
@@ -272,6 +275,27 @@ export const MandatoryProfileModal: React.FC<MandatoryProfileModalProps> = ({
                   onChange={(e) => setProgramName(e.target.value)}
                   className="w-full bg-[#0F011E] border border-white/20 focus:border-[#00D1FF] text-white font-bold rounded-xl px-4 py-2.5 text-xs focus:outline-none"
                 />
+              </div>
+            )}
+
+            {/* T-Shirt Size for Students */}
+            {isStudent && (
+              <div>
+                <label className="text-[10px] font-black text-amber-300 uppercase tracking-widest block mb-1">
+                  👕 Marathon / Official T-Shirt Size
+                </label>
+                <select
+                  value={tShirtSize}
+                  onChange={(e) => setTShirtSize(e.target.value)}
+                  className="w-full bg-[#0F011E] border border-amber-400/50 focus:border-amber-400 text-white font-bold rounded-xl px-4 py-2.5 text-xs focus:outline-none"
+                >
+                  <option value="S">Small (S)</option>
+                  <option value="M">Medium (M)</option>
+                  <option value="L">Large (L)</option>
+                  <option value="XL">Extra Large (XL)</option>
+                  <option value="XXL">Double Extra Large (XXL)</option>
+                  <option value="3XL">Triple Extra Large (3XL)</option>
+                </select>
               </div>
             )}
 

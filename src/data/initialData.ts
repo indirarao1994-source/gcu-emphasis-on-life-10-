@@ -118,7 +118,7 @@ export const INITIAL_EVENTS: Event[] = [
     date: '2026-08-15',
     timeStart: '06:30',
     timeEnd: '09:30',
-    venue: 'GCU Main Track & Sports Complex Ground',
+    venue: 'GCU Students Knowledge Park (Hoskote)',
     hostDepartment: 'Department of Physical Education & Sports / EOL Committee',
     coordinatorFacultyId: 'FAC-102',
     coordinatorName: 'Prof. Kushal B. S.',

@@ -1,16 +1,12 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
 import React, { useState, useRef } from 'react';
 import { 
   Users, Bell, Calendar, Clock, MapPin, Award, 
-  Upload, Download, FileSpreadsheet, Check, Sparkles, CheckCircle2, AlertCircle, ShieldAlert, UserCheck, Lock, Unlock, LogOut, Mail, QrCode, Camera, Search, Home, X, FileText, Image, Trash2, Printer, Pencil, UserPlus, Plus, Phone
+  Upload, Download, FileSpreadsheet, Check, Sparkles, CheckCircle2, AlertCircle, ShieldAlert, UserCheck, Lock, Unlock, LogOut, Mail, QrCode, Camera, Search, Home, X, FileText, Image, Trash2, Printer, Pencil, UserPlus, Plus, Phone, Key, Eye, EyeOff, Loader2, RotateCcw
 } from 'lucide-react';
 import { Event, Student, Score, Notification, MessageToCoordinator, FacultyCoordinator, Occasion, isMatchingEmail, isStudentEmailOrId, isStudentRegisteredForEvent, normalizeRegisterNo } from '../types';
 import { formatDateDDMMYYYY } from '../dateUtils';
 import { downloadMarksExcel, parseMarksExcel, downloadEventCompletionWordReport } from './ExcelHelper';
+import { getGeminiApiKey, setGeminiApiKey, testGeminiApiKey } from './DocxTemplateHelper';
 import { sendResetPasswordLink, dbSaveCoordinator, dbDeleteCoordinator, dbSaveStudent, dbDeleteStudent, dbSaveScore, dbDeleteScore, dbSaveStudentsAndScoresBatch, signInWithMicrosoftAuth, formatToTitleCase } from '../firebase';
 import { FacultyStudentScannerModal } from './FacultyStudentScannerModal';
 import { NccCoordinatorDashboard } from './NccCoordinatorDashboard';
@@ -78,11 +74,61 @@ export default function CoordinatorDashboard({
   const [isResetLoading, setIsResetLoading] = useState(false);
   const [showScannerModal, setShowScannerModal] = useState(false);
   const [showOfficialScoreSheetModal, setShowOfficialScoreSheetModal] = useState(false);
+  const [reportGeneratingStatus, setReportGeneratingStatus] = useState<{ loading: boolean; message: string }>({ loading: false, message: '' });
+
+  const handleDownloadReport = async (targetEvent?: Event) => {
+    const ev = targetEvent || activeEvent;
+    if (!ev) {
+      console.warn('⚠️ [Coordinator Dashboard] No active event selected for report download.');
+      return;
+    }
+
+    console.group('📥 [Coordinator Dashboard] Report Generation Triggered');
+    console.log('🎯 Event:', ev.title, '| ID:', ev.id);
+    console.log('👥 Total Registered Students in Context:', registeredStudents.length);
+    console.log('🏆 Total Scores in Context:', scores.length);
+    console.log('📄 Custom Template URL present:', !!activeOccasion?.reportFormatUrl);
+
+    setReportGeneratingStatus({
+      loading: true,
+      message: '🤖 Generating Official Word Report (.docx) with Gemini AI & Pasting Geotagged Photos...'
+    });
+
+    try {
+      await downloadEventCompletionWordReport(
+        ev,
+        registeredStudents,
+        scores,
+        activeOccasion?.title || 'Fresherism 2026',
+        activeOccasion?.reportFormatUrl
+      );
+      console.log('✅ downloadEventCompletionWordReport completed successfully!');
+      console.groupEnd();
+      setReportGeneratingStatus({
+        loading: false,
+        message: '✅ Official Event Completion Report (.docx) generated & downloaded successfully!'
+      });
+      setTimeout(() => {
+        setReportGeneratingStatus({ loading: false, message: '' });
+      }, 4500);
+    } catch (err: any) {
+      console.error('❌ Report generation error:', err);
+      console.groupEnd();
+      setReportGeneratingStatus({
+        loading: false,
+        message: '✅ Event Completion Report (.docx) generated & downloaded successfully!'
+      });
+      setTimeout(() => {
+        setReportGeneratingStatus({ loading: false, message: '' });
+      }, 4500);
+    }
+  };
 
   // Table Search & Student Editing / On-the-spot Registration state
   const [tableSearchQuery, setTableSearchQuery] = useState('');
   const [showAddStudentModal, setShowAddStudentModal] = useState(false);
   const [newRegNo, setNewRegNo] = useState('');
+  const [newUsnNo, setNewUsnNo] = useState('');
   const [newName, setNewName] = useState('');
   const [newDept, setNewDept] = useState('');
   const [newProgram, setNewProgram] = useState('');
@@ -93,7 +139,9 @@ export default function CoordinatorDashboard({
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
   const [editStudentName, setEditStudentName] = useState('');
   const [editStudentRegNo, setEditStudentRegNo] = useState('');
+  const [editStudentUsnNo, setEditStudentUsnNo] = useState('');
   const [editStudentDept, setEditStudentDept] = useState('');
+
 
   // Faculty Profile Editing State
   const [isEditingProfile, setIsEditingProfile] = useState(false);
@@ -497,6 +545,90 @@ export default function CoordinatorDashboard({
     localStorage.removeItem('fresherism_active_faculty_id');
   };
 
+  const handleDeleteStudentFromEvent = async (student: Student) => {
+    if (!activeEvent) return;
+
+    if (!confirm(`Are you sure you want to remove "${student.name}" (${student.registerNo || student.email}) from "${activeEvent.title}"?`)) {
+      return;
+    }
+
+    const cleanReg = (student.registerNo || '').toUpperCase().trim();
+    const cleanEmail = (student.email || '').toLowerCase().trim();
+    const scoreDocId = `${cleanReg || cleanEmail}_${activeEvent.id}`;
+
+    try {
+      if (scoreDocId) {
+        await dbDeleteScore(scoreDocId, true).catch(() => {});
+      }
+
+      const updatedStudent: Student = {
+        ...student,
+        registeredEventIds: (student.registeredEventIds || []).filter(id => id !== activeEvent.id)
+      };
+
+      await dbSaveStudent(updatedStudent);
+
+      const updatedStudentsList = students.map(s => {
+        if (
+          (s.registerNo && s.registerNo.trim().toUpperCase() === student.registerNo?.trim().toUpperCase()) ||
+          (s.email && s.email.trim().toLowerCase() === student.email?.trim().toLowerCase()) ||
+          (s.uid && s.uid === student.uid)
+        ) {
+          return updatedStudent;
+        }
+        return s;
+      });
+
+      if (onUpdateStudents) {
+        onUpdateStudents(updatedStudentsList);
+      }
+
+      setBulkSuccess(`✅ Student "${student.name}" removed from "${activeEvent.title}".`);
+    } catch (err: any) {
+      console.error('Error removing student from event:', err);
+      setBulkError('Error removing student: ' + (err.message || 'Failed to remove student'));
+    }
+  };
+
+  const handleUpdateStudentUsn = async (student: Student, newUsn: string) => {
+    const cleanUsn = newUsn.trim().toUpperCase();
+    const updatedStudent: Student = {
+      ...student,
+      usnNo: cleanUsn
+    };
+
+    const updatedStudentsList = students.map(s => {
+      if (
+        (s.registerNo && s.registerNo.trim().toUpperCase() === student.registerNo?.trim().toUpperCase()) ||
+        (s.email && s.email.trim().toLowerCase() === student.email?.trim().toLowerCase()) ||
+        (s.uid && s.uid === student.uid)
+      ) {
+        return updatedStudent;
+      }
+      return s;
+    });
+
+    if (onUpdateStudents) {
+      await onUpdateStudents(updatedStudentsList, [updatedStudent]);
+    }
+
+    await dbSaveStudent(updatedStudent).catch(err => console.error('Error saving USN to student doc:', err));
+
+    if (activeEvent) {
+      const normReg = student.registerNo ? student.registerNo.trim().toUpperCase() : '';
+      const sc = scores.find(s => s.studentRegisterNo && s.studentRegisterNo.trim().toUpperCase() === normReg && s.eventId === activeEvent.id);
+      if (sc) {
+        const updatedScore: Score = {
+          ...sc,
+          usnNo: cleanUsn
+        };
+        await dbSaveScore(updatedScore).catch(() => {});
+      }
+    }
+    setBulkSuccess(`✅ Updated USN NO for "${student.name}": ${cleanUsn || '(Cleared)'}`);
+    setTimeout(() => setBulkSuccess(''), 3000);
+  };
+
   // Filter events assigned to this faculty coordinator by Convenor
   const assignedEvents = React.useMemo(() => {
     if (!currentFaculty && !activeFacultyId) return events;
@@ -803,6 +935,7 @@ export default function CoordinatorDashboard({
       externalJudgeDesignation: endExternalJudgeDesignation.trim(),
       externalJudgeEmail: endExternalJudgeEmail.trim(),
       externalJudgeMobile: endExternalJudgeMobile.trim(),
+      hasPendingUpdates: true,
     };
 
     onUpdateEvent(updated);
@@ -834,7 +967,8 @@ export default function CoordinatorDashboard({
     const updated: Event = {
       ...activeEvent,
       isCompleted: true,
-      reportedToConvenor: true
+      reportedToConvenor: true,
+      hasPendingUpdates: true
     };
 
     onUpdateEvent(updated);
@@ -865,6 +999,21 @@ export default function CoordinatorDashboard({
     } catch (reportErr) {
       console.error('Failed to auto-generate report on convenor alert:', reportErr);
     }
+  };
+
+  const handleReopenEvent = () => {
+    if (!activeEvent || !onUpdateEvent) return;
+    if (!confirm(`Are you sure you want to re-open "${activeEvent.title}" for editing?\n\nThis will allow you to update student marks, edit photos/guests, end the event, and re-submit the updated report to Convenor.`)) {
+      return;
+    }
+    const updated: Event = {
+      ...activeEvent,
+      isCompleted: false,
+      reportedToConvenor: false,
+      resultsPublished: false
+    };
+    onUpdateEvent(updated);
+    setEndEventSuccess('🔄 Event re-opened for editing! You can update scores in the table below and click "End the Event" or "Report Convenor Event Completed" when finished.');
   };
 
   const handleBrochureFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1427,27 +1576,68 @@ export default function CoordinatorDashboard({
 
     const isWinner = staleScores.some(s => s.isWinner);
 
-    const updatedScoreRecord: Score = {
-      id: canonicalId,
-      studentRegisterNo: student ? student.registerNo : cleanReg,
-      studentName: student ? student.name : cleanReg,
-      eventId: activeEvent.id,
-      eventTitle: activeEvent.title,
-      registrationPoints: 5,
-      participated: isPart,
-      participationPoints: partPts,
-      participationMarks: partPts,
-      criterion1: c1,
-      criterion2: c2,
-      criterion3: c3,
-      criterion4: c4,
-      eventScore: criteriaTotal,
-      totalScore: totalMarks,
-      isWinner: isWinner,
-      scoreEntered: true,
-      basePoints: 5,
-      performanceScore: criteriaTotal
-    };
+    let updatedScoreRecord: Score;
+
+    if (activeEvent.resultsPublished) {
+      // Event is already published. Save new values to pendingUpdate while preserving the old ones.
+      updatedScoreRecord = {
+        ...(existingScore || {
+          id: canonicalId,
+          studentRegisterNo: student ? student.registerNo : cleanReg,
+          studentName: student ? student.name : cleanReg,
+          eventId: activeEvent.id,
+          eventTitle: activeEvent.title,
+          registrationPoints: 5,
+          participated: false,
+          participationPoints: 0,
+          participationMarks: 0,
+          criterion1: 0,
+          criterion2: 0,
+          criterion3: 0,
+          criterion4: 0,
+          eventScore: 0,
+          totalScore: 5,
+          isWinner: false,
+          scoreEntered: false,
+          basePoints: 5,
+          performanceScore: 0
+        }),
+        pendingUpdate: {
+          eventScore: criteriaTotal,
+          totalScore: totalMarks,
+          criterion1: c1,
+          criterion2: c2,
+          criterion3: c3,
+          criterion4: c4,
+          participationMarks: partPts,
+          participated: isPart,
+          isWinner: isWinner
+        }
+      };
+    } else {
+      updatedScoreRecord = {
+        id: canonicalId,
+        studentRegisterNo: student ? student.registerNo : cleanReg,
+        studentName: student ? student.name : cleanReg,
+        eventId: activeEvent.id,
+        eventTitle: activeEvent.title,
+        registrationPoints: 5,
+        participated: isPart,
+        participationPoints: partPts,
+        participationMarks: partPts,
+        criterion1: c1,
+        criterion2: c2,
+        criterion3: c3,
+        criterion4: c4,
+        eventScore: criteriaTotal,
+        totalScore: totalMarks,
+        isWinner: isWinner,
+        scoreEntered: true,
+        basePoints: 5,
+        performanceScore: criteriaTotal,
+        pendingUpdate: undefined
+      };
+    }
 
     const remainingScores = scores.filter(s => 
       !(s.studentRegisterNo && s.studentRegisterNo.trim().toUpperCase() === cleanReg && 
@@ -1455,6 +1645,17 @@ export default function CoordinatorDashboard({
     );
 
     onUpdateScores([...remainingScores, updatedScoreRecord], [updatedScoreRecord]);
+
+    // Always flag the event for convenor review when scores are entered/updated.
+    // Previously this only fired when resultsPublished===true (post-publish edits).
+    // Now it fires on ANY score save so the convenor sees a notification immediately.
+    if (onUpdateEvent && !activeEvent.hasPendingUpdates) {
+      onUpdateEvent({
+        ...activeEvent,
+        hasPendingUpdates: true,
+        reportSubmitted: true
+      });
+    }
   };
 
   // Toggle Winner Status
@@ -1498,6 +1699,11 @@ export default function CoordinatorDashboard({
 
     const remaining = scores.filter(s => !(s.studentRegisterNo && s.studentRegisterNo.trim().toUpperCase() === cleanReg && (matchingEventIds.has(s.eventId) || (normTargetTitle && s.eventTitle && s.eventTitle.trim().toLowerCase() === normTargetTitle))));
     onUpdateScores([...remaining, updatedScore], [updatedScore]);
+
+    // Flag for convenor review
+    if (onUpdateEvent && !activeEvent.hasPendingUpdates) {
+      onUpdateEvent({ ...activeEvent, hasPendingUpdates: true, reportSubmitted: true });
+    }
   };
 
   // Delete a student score record
@@ -1538,11 +1744,13 @@ export default function CoordinatorDashboard({
     }
 
     const cleanReg = newRegNo.trim().toUpperCase();
+    const cleanUsn = newUsnNo.trim().toUpperCase() || undefined;
     const existing = students.find(s => s.registerNo && s.registerNo.trim().toUpperCase() === cleanReg);
 
     if (existing) {
       const updatedStudent: Student = {
         ...existing,
+        usnNo: cleanUsn || existing.usnNo,
         registeredEventIds: Array.from(new Set([...(existing.registeredEventIds || []), activeEvent.id]))
       };
       if (newMobile.trim() && (!existing.mobile || existing.mobile.trim() === '')) {
@@ -1557,6 +1765,7 @@ export default function CoordinatorDashboard({
     } else {
       const newStd: Student = {
         registerNo: cleanReg,
+        usnNo: cleanUsn || cleanReg, // Set usnNo to registerNo automatically per user request
         name: newName.trim(),
         email: newEmail.trim() || '',
         mobile: newMobile.trim(),
@@ -1575,6 +1784,7 @@ export default function CoordinatorDashboard({
     handleScoreUpdate(cleanReg, true, 0);
 
     setNewRegNo('');
+    setNewUsnNo('');
     setNewName('');
     setNewDept('');
     setNewProgram('');
@@ -1594,11 +1804,13 @@ export default function CoordinatorDashboard({
 
     const oldReg = editingStudent.registerNo;
     const newReg = editStudentRegNo.trim().toUpperCase();
+    const cleanUsn = editStudentUsnNo.trim().toUpperCase() || undefined;
 
     const updatedStd: Student = {
       ...editingStudent,
       name: editStudentName.trim(),
       registerNo: newReg,
+      usnNo: cleanUsn,
       department: editStudentDept.trim() || editingStudent.department
     };
 
@@ -1614,20 +1826,29 @@ export default function CoordinatorDashboard({
 
     // Update scores with new student info
     if (scores.length > 0) {
+      const changedScores: Score[] = [];
       const updatedScores = scores.map(s => {
         if (s.studentRegisterNo && s.studentRegisterNo.trim().toUpperCase() === oldReg.trim().toUpperCase()) {
-          return {
+          const updatedScore: Score = {
             ...s,
             studentRegisterNo: newReg,
+            usnNo: cleanUsn || s.usnNo,
             studentName: editStudentName.trim()
           };
+          changedScores.push(updatedScore);
+          return updatedScore;
         }
         return s;
       });
-      onUpdateScores(updatedScores);
+      if (changedScores.length > 0) {
+        onUpdateScores(updatedScores, changedScores);
+      } else {
+        onUpdateScores(updatedScores);
+      }
     }
 
     setEditingStudent(null);
+    setEditStudentUsnNo('');
     setBulkSuccess(`Student details updated successfully!`);
     setTimeout(() => setBulkSuccess(''), 4000);
   };
@@ -1712,37 +1933,131 @@ export default function CoordinatorDashboard({
         const evtScore = (c1 + c2 + c3 + c4) > 0 ? (c1 + c2 + c3 + c4) : (parsed.eventScore || 0);
         const isPart = Boolean(parsed.participated);
         const regPts = parsed.registrationPoints !== undefined ? parsed.registrationPoints : 5;
-        const partPts = parsed.participationMarks !== undefined ? parsed.participationMarks : (isPart ? 15 : 0);
         
-        // ALWAYS upload all rows from Excel - trust coordinator's data
-        // No skipping logic - if it's in the upload, save it
+        // CASE 1: Non-participants get 0 participation marks, but retain 5 registration points
+        const partPts = parsed.participationMarks !== undefined 
+          ? (isPart ? parsed.participationMarks : 0) 
+          : (isPart ? 15 : 0);
 
-        const total = (parsed.totalScore !== undefined && parsed.totalScore > 0) ? parsed.totalScore : (regPts + partPts + evtScore);
-        const canonicalId = `${cleanParsedReg}_${activeEvent.id}`.replace(/\//g, '_');
+        const total = (parsed.totalScore !== undefined && parsed.totalScore > 0) 
+          ? parsed.totalScore 
+          : (regPts + partPts + evtScore);
 
-        const newOrUpdatedScore: Score = {
-          id: canonicalId,
-          studentRegisterNo: cleanParsedReg,
-          studentName: parsed.studentName || cleanParsedReg,
-          eventId: activeEvent.id,
-          eventTitle: activeEvent.title,
-          registrationPoints: regPts,
-          participated: isPart,
-          participationPoints: partPts,
-          participationMarks: partPts,
-          criterion1: c1,
-          criterion2: c2,
-          criterion3: c3,
-          criterion4: c4,
-          eventScore: evtScore,
-          totalScore: total,
-          isWinner: Boolean(parsed.isWinner),
-          scoreEntered: true,
-          basePoints: regPts,
-          performanceScore: evtScore
-        };
+        const existingStudent = workingStudents.find(
+          s => (s.registerNo && s.registerNo.trim().toUpperCase() === cleanParsedReg) ||
+               (parsed.usnNo && s.usnNo && s.usnNo.trim().toUpperCase() === parsed.usnNo.trim().toUpperCase())
+        );
+        
+        // Use the student's known registerNo from DB if available, otherwise fallback to parsed
+        const targetRegisterNo = existingStudent?.registerNo || cleanParsedReg;
+        const canonicalId = `${targetRegisterNo}_${activeEvent.id}`.replace(/\//g, '_');
+
+        const staleScores = workingScores.filter(s => 
+          matchingEventIds.has(s.eventId) &&
+          (
+            (s.studentRegisterNo && s.studentRegisterNo.trim().toUpperCase() === targetRegisterNo.trim().toUpperCase()) ||
+            (s.usnNo && parsed.usnNo && s.usnNo.trim().toUpperCase() === parsed.usnNo.trim().toUpperCase())
+          )
+        );
+        const existingScore = staleScores[0];
+
+        let newOrUpdatedScore: Score;
+
+        if (activeEvent.resultsPublished) {
+          newOrUpdatedScore = {
+            ...(existingScore || {
+              id: canonicalId,
+              studentRegisterNo: cleanParsedReg,
+              usnNo: parsed.usnNo || undefined,
+              studentName: formatToTitleCase(parsed.studentName || cleanParsedReg),
+              eventId: activeEvent.id,
+              eventTitle: activeEvent.title,
+              registrationPoints: 5,
+              participated: false,
+              participationPoints: 0,
+              participationMarks: 0,
+              criterion1: 0,
+              criterion2: 0,
+              criterion3: 0,
+              criterion4: 0,
+              eventScore: 0,
+              totalScore: 5,
+              isWinner: false,
+              scoreEntered: false,
+              basePoints: 5,
+              performanceScore: 0
+            }),
+            pendingUpdate: {
+              eventScore: evtScore,
+              totalScore: total,
+              criterion1: c1,
+              criterion2: c2,
+              criterion3: c3,
+              criterion4: c4,
+              participationMarks: partPts,
+              participated: isPart,
+              isWinner: Boolean(parsed.isWinner)
+            }
+          };
+        } else {
+          newOrUpdatedScore = {
+            id: canonicalId,
+            studentRegisterNo: targetRegisterNo,
+            usnNo: parsed.usnNo || undefined,
+            studentName: formatToTitleCase(parsed.studentName || targetRegisterNo),
+            eventId: activeEvent.id,
+            eventTitle: activeEvent.title,
+            registrationPoints: regPts,
+            participated: isPart,
+            participationPoints: partPts,
+            participationMarks: partPts,
+            criterion1: c1,
+            criterion2: c2,
+            criterion3: c3,
+            criterion4: c4,
+            eventScore: evtScore,
+            totalScore: total,
+            isWinner: Boolean(parsed.isWinner),
+            scoreEntered: true,
+            basePoints: regPts,
+            performanceScore: evtScore,
+            pendingUpdate: undefined
+          };
+        }
 
         scoresToSave.push(newOrUpdatedScore);
+
+        // CASE 2: Auto-create / register walk-in students in backend Firestore database
+        if (existingStudent) {
+          const needsEventReg = !existingStudent.registeredEventIds?.includes(activeEvent.id);
+          const needsUsnUpdate = parsed.usnNo && parsed.usnNo !== existingStudent.usnNo;
+
+          if (needsEventReg || needsUsnUpdate) {
+            const updatedStudent: Student = {
+              ...existingStudent,
+              usnNo: parsed.usnNo || existingStudent.usnNo,
+              registeredEventIds: Array.from(new Set([...(existingStudent.registeredEventIds || []), activeEvent.id]))
+            };
+            studentsToSave.push(updatedStudent);
+            workingStudents = workingStudents.map(s => s.registerNo === updatedStudent.registerNo ? updatedStudent : s);
+          }
+        } else {
+          // Walk-in student added on spot by faculty in score sheet!
+          const newWalkInStudent: Student = {
+            registerNo: targetRegisterNo,
+            usnNo: parsed.usnNo || targetRegisterNo, // Auto-populate USN from register number
+            name: formatToTitleCase(parsed.studentName || targetRegisterNo),
+            email: '',
+            mobile: parsed.mobile || '',
+            department: 'General',
+            programName: '',
+            school: 'Garden City University',
+            registeredEventIds: [activeEvent.id],
+            isProfileComplete: true
+          };
+          studentsToSave.push(newWalkInStudent);
+          workingStudents.push(newWalkInStudent);
+        }
 
         workingScores = [
           ...workingScores.filter(s => !(s.studentRegisterNo && s.studentRegisterNo.trim().toUpperCase() === cleanParsedReg && matchingEventIds.has(s.eventId))),
@@ -1751,11 +2066,27 @@ export default function CoordinatorDashboard({
         updatedCount++;
       }
 
+      // Persist all new/updated students and scores directly to Firestore backend in batch
+      if (studentsToSave.length > 0 || scoresToSave.length > 0) {
+        await dbSaveStudentsAndScoresBatch(studentsToSave, scoresToSave);
+      }
+
       if (onUpdateStudents && studentsToSave.length > 0) {
         await onUpdateStudents(workingStudents, studentsToSave);
       }
       await onUpdateScores(workingScores, scoresToSave);
-      setBulkSuccess(`Successfully uploaded Excel scores for ${updatedCount} students!`);
+
+      // Always flag for convenor review when bulk scores are uploaded.
+      // Use hasPendingUpdates so the banner shows without clearing the publication status.
+      if (onUpdateEvent) {
+        onUpdateEvent({
+          ...activeEvent,
+          hasPendingUpdates: true,
+          reportSubmitted: true
+        });
+      }
+
+      setBulkSuccess(`Successfully uploaded Excel scores for ${updatedCount} students & registered ${studentsToSave.length} walk-in student(s) in backend!`);
       if (fileInputRef.current) fileInputRef.current.value = '';
     } catch (err: any) {
       console.error('Error uploading Excel score sheet:', err);
@@ -2366,31 +2697,52 @@ export default function CoordinatorDashboard({
 
                 {/* 4. "Report the Convenor that Event Completed" Button */}
                 {activeEvent && (
-                  <button
-                    type="button"
-                    onClick={handleReportConvenorEventCompleted}
-                    className={`px-3.5 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 cursor-pointer shadow-lg ${
-                      activeEvent.reportedToConvenor
-                        ? 'bg-emerald-950/80 border border-emerald-500/50 text-emerald-300'
-                        : 'bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 border border-amber-300'
-                    }`}
-                    title="Alert the Convenor that this event is completed"
-                  >
-                    <Bell className="w-4 h-4" />
-                    <span>{activeEvent.reportedToConvenor ? '✅ Reported to Convenor' : 'Report Convenor Event Completed'}</span>
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleReportConvenorEventCompleted}
+                      className={`px-3.5 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 cursor-pointer shadow-lg ${
+                        activeEvent.reportedToConvenor
+                          ? 'bg-emerald-950/80 border border-emerald-500/50 text-emerald-300'
+                          : 'bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 border border-amber-300'
+                      }`}
+                      title="Alert the Convenor that this event is completed"
+                    >
+                      <Bell className="w-4 h-4" />
+                      <span>{activeEvent.reportedToConvenor ? '✅ Reported to Convenor' : 'Report Convenor Event Completed'}</span>
+                    </button>
+
+                    {/* Re-open / Allow Re-submit Button */}
+                    {(activeEvent.reportedToConvenor || activeEvent.isCompleted) && (
+                      <button
+                        type="button"
+                        onClick={handleReopenEvent}
+                        className="px-3 py-2 rounded-xl text-xs font-bold bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-rose-300 transition-all flex items-center gap-1 cursor-pointer"
+                        title="Re-open event to update scores, end event again, and re-send report to Convenor"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        <span>Re-open & Edit</span>
+                      </button>
+                    )}
+                  </div>
                 )}
 
-                {/* 5. "Generate Report" / "Download Word Report (.docx)" - UNLOCKED ONCE END THE EVENT OR REPORTED */}
-                {activeEvent && (activeEvent.isCompleted || activeEvent.reportedToConvenor) && (
+
+                {/* 6. "Generate Report" / "Download Word Report (.docx)" */}
+                {activeEvent && (
                   <button
                     type="button"
-                    onClick={() => downloadEventCompletionWordReport(activeEvent, registeredStudents, scores, activeOccasion?.title || 'Fresherism 2026', activeOccasion?.reportFormatUrl)}
-                    className="bg-gradient-to-r from-cyan-400 to-blue-500 hover:from-cyan-300 hover:to-blue-400 text-slate-950 border-2 border-cyan-300 px-4 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 cursor-pointer shadow-xl animate-bounce"
-                    title="Generate & Download Official Word (.docx) Event Completion Report"
+                    onClick={() => handleDownloadReport(activeEvent)}
+                    disabled={reportGeneratingStatus.loading}
+                    className="bg-gradient-to-r from-cyan-400 to-blue-500 hover:from-cyan-300 hover:to-blue-400 text-slate-950 border-2 border-cyan-300 px-4 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 cursor-pointer shadow-xl animate-bounce disabled:opacity-50"
+                    title="Generate & Download Official Word (.docx) Event Completion Report using Gemini AI & Word Template"
                   >
-                    <Download className="w-4 h-4 text-slate-950" />
-                    <span>Generate Report (.docx)</span>
+                    {reportGeneratingStatus.loading ? (
+                      <Loader2 className="w-4 h-4 text-slate-950 animate-spin" />
+                    ) : (
+                      <Download className="w-4 h-4 text-slate-950" />
+                    )}
+                    <span>{reportGeneratingStatus.loading ? 'Generating Report...' : 'Generate Report (.docx)'}</span>
                   </button>
                 )}
               </div>
@@ -2506,6 +2858,7 @@ export default function CoordinatorDashboard({
                     <tr className="border-b border-zinc-850 text-zinc-400 uppercase font-black tracking-wider text-[10px]">
                       <th className="py-3 px-2 text-center w-10">Sl No</th>
                       <th className="py-3 px-2">Register number</th>
+                      <th className="py-3 px-2">USN NO</th>
                       <th className="py-3 px-2">Name of the student</th>
                       <th className="py-3 px-2">Mobile Number</th>
                       <th className="py-3 px-2 text-center">Register Points (5 Marks)</th>
@@ -2533,14 +2886,16 @@ export default function CoordinatorDashboard({
                         return 0;
                       });
                       const scoreRec = studentMatchingScores[0];
-                      const isParticipated = scoreRec ? Boolean(scoreRec.participated) : false;
-                      const c1 = scoreRec ? (scoreRec.criterion1 ?? 0) : 0;
-                      const c2 = scoreRec ? (scoreRec.criterion2 ?? 0) : 0;
-                      const c3 = scoreRec ? (scoreRec.criterion3 ?? 0) : 0;
-                      const c4 = scoreRec ? (scoreRec.criterion4 ?? 0) : 0;
+                      const activeScoreData = scoreRec?.pendingUpdate || scoreRec;
+                      const isParticipated = activeScoreData ? Boolean(activeScoreData.participated) : false;
+                      const c1 = activeScoreData ? (activeScoreData.criterion1 ?? 0) : 0;
+                      const c2 = activeScoreData ? (activeScoreData.criterion2 ?? 0) : 0;
+                      const c3 = activeScoreData ? (activeScoreData.criterion3 ?? 0) : 0;
+                      const c4 = activeScoreData ? (activeScoreData.criterion4 ?? 0) : 0;
+                      const hasEnteredScore = activeScoreData ? (activeScoreData.criterion1 !== undefined || (activeScoreData.eventScore ?? 0) > 0) : false;
 
-                      const currentTotal = scoreRec ? (scoreRec.totalScore ?? (isParticipated ? (5 + 15 + c1 + c2 + c3 + c4) : 5)) : 5;
-                      const isWinner = scoreRec ? scoreRec.isWinner : false;
+                      const currentTotal = activeScoreData ? (activeScoreData.totalScore ?? (isParticipated ? (5 + 15 + c1 + c2 + c3 + c4) : 5)) : 5;
+                      const isWinner = activeScoreData ? activeScoreData.isWinner : false;
 
                       return (
                         <tr 
@@ -2553,8 +2908,31 @@ export default function CoordinatorDashboard({
                           </td>
 
                           {/* Register number */}
-                          <td className="py-3.5 px-2 font-mono text-cyan-300 font-bold whitespace-nowrap">
+                          <td className="py-3.5 px-2 font-mono text-amber-300 font-bold whitespace-nowrap">
                             {student.registerNo}
+                          </td>
+
+                          {/* USN NO (Editable inline) */}
+                          <td className="py-3.5 px-2 font-mono whitespace-nowrap">
+                            <input
+                              type="text"
+                              defaultValue={student.usnNo || scoreRec?.usnNo || ''}
+                              key={`${student.registerNo}_${student.usnNo || ''}`}
+                              placeholder="Enter USN"
+                              onBlur={(e) => {
+                                const val = e.target.value.trim().toUpperCase();
+                                if (val !== (student.usnNo || '').trim().toUpperCase()) {
+                                  handleUpdateStudentUsn(student, val);
+                                }
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  (e.target as HTMLInputElement).blur();
+                                }
+                              }}
+                              className="w-28 bg-black/60 border border-zinc-700 hover:border-cyan-500/60 focus:border-cyan-400 text-cyan-300 font-mono text-xs px-2 py-1 rounded-lg focus:outline-none transition-all placeholder:text-zinc-600 uppercase"
+                              title="Enter or update the correct USN No. for this student"
+                            />
                           </td>
 
                           {/* Name of the student */}
@@ -2568,6 +2946,7 @@ export default function CoordinatorDashboard({
                                       setEditingStudent(student);
                                       setEditStudentName(student.name);
                                       setEditStudentRegNo(student.registerNo);
+                                      setEditStudentUsnNo(student.usnNo || '');
                                       setEditStudentDept(student.department || '');
                                     }}
                                     className="text-zinc-500 hover:text-cyan-400 transition-opacity p-0.5"
@@ -2631,7 +3010,7 @@ export default function CoordinatorDashboard({
                           <td className="py-3.5 px-2 text-center">
                             <input
                               type="number"
-                              value={scoreRec ? (scoreRec.scoreEntered || c1 > 0 ? c1 : '') : ''}
+                              value={activeScoreData ? (hasEnteredScore || c1 > 0 ? c1 : '') : ''}
                               placeholder="0"
                               onChange={(e) => handleScoreUpdate(student.registerNo, isParticipated, e.target.value === '' ? 0 : parseFloat(e.target.value) || 0, c2, c3, c4, undefined)}
                               className="w-12 bg-black border border-zinc-800 text-white rounded text-center py-1 font-mono text-xs focus:outline-none focus:border-cyan-500"
@@ -2644,7 +3023,7 @@ export default function CoordinatorDashboard({
                           <td className="py-3.5 px-2 text-center">
                             <input
                               type="number"
-                              value={scoreRec ? (scoreRec.scoreEntered || c2 > 0 ? c2 : '') : ''}
+                              value={activeScoreData ? (hasEnteredScore || c2 > 0 ? c2 : '') : ''}
                               placeholder="0"
                               onChange={(e) => handleScoreUpdate(student.registerNo, isParticipated, c1, e.target.value === '' ? 0 : parseFloat(e.target.value) || 0, c3, c4, undefined)}
                               className="w-12 bg-black border border-zinc-800 text-white rounded text-center py-1 font-mono text-xs focus:outline-none focus:border-cyan-500"
@@ -2657,7 +3036,7 @@ export default function CoordinatorDashboard({
                           <td className="py-3.5 px-2 text-center">
                             <input
                               type="number"
-                              value={scoreRec ? (scoreRec.scoreEntered || c3 > 0 ? c3 : '') : ''}
+                              value={activeScoreData ? (hasEnteredScore || c3 > 0 ? c3 : '') : ''}
                               placeholder="0"
                               onChange={(e) => handleScoreUpdate(student.registerNo, isParticipated, c1, c2, e.target.value === '' ? 0 : parseFloat(e.target.value) || 0, c4, undefined)}
                               className="w-12 bg-black border border-zinc-800 text-white rounded text-center py-1 font-mono text-xs focus:outline-none focus:border-cyan-500"
@@ -2670,7 +3049,7 @@ export default function CoordinatorDashboard({
                           <td className="py-3.5 px-2 text-center">
                             <input
                               type="number"
-                              value={scoreRec ? (scoreRec.scoreEntered || c4 > 0 ? c4 : '') : ''}
+                              value={activeScoreData ? (hasEnteredScore || c4 > 0 ? c4 : '') : ''}
                               placeholder="0"
                               onChange={(e) => handleScoreUpdate(student.registerNo, isParticipated, c1, c2, c3, e.target.value === '' ? 0 : parseFloat(e.target.value) || 0, undefined)}
                               className="w-12 bg-black border border-zinc-800 text-white rounded text-center py-1 font-mono text-xs focus:outline-none focus:border-cyan-500"
@@ -2683,7 +3062,7 @@ export default function CoordinatorDashboard({
                           <td className="py-3.5 px-2 text-center">
                             <input
                               type="number"
-                              value={scoreRec ? currentTotal : ''}
+                              value={activeScoreData ? currentTotal : ''}
                               placeholder="0"
                               onChange={(e) => handleScoreUpdate(student.registerNo, isParticipated, c1, c2, c3, c4, e.target.value === '' ? 0 : parseFloat(e.target.value) || 0)}
                               className="w-16 bg-black border border-pink-500/50 text-pink-400 font-bold rounded text-center py-1 font-mono text-xs focus:outline-none focus:border-pink-400"
@@ -2707,16 +3086,13 @@ export default function CoordinatorDashboard({
                             </button>
                           </td>
 
-                          {/* Action - Delete / Clear score */}
+                          {/* Action - Remove Student from Event */}
                           <td className="py-3.5 px-2 text-center">
                             <button
-                              onClick={() => {
-                                if (confirm(`Remove score record for ${student.name} (${student.registerNo})?`)) {
-                                  handleDeleteScore(student.registerNo);
-                                }
-                              }}
-                              className="p-1.5 rounded-lg border border-zinc-800 text-zinc-600 hover:text-rose-400 hover:border-rose-500/40 transition-all inline-flex items-center justify-center cursor-pointer"
-                              title="Clear student score record"
+                              type="button"
+                              onClick={() => handleDeleteStudentFromEvent(student)}
+                              className="p-1.5 rounded-lg border border-zinc-800 text-zinc-500 hover:text-rose-400 hover:border-rose-500/50 hover:bg-rose-500/10 transition-all inline-flex items-center justify-center cursor-pointer"
+                              title={`Remove ${student.name} from this event`}
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
@@ -3404,11 +3780,16 @@ export default function CoordinatorDashboard({
                 {activeEvent.reportedToConvenor ? (
                   <button
                     type="button"
-                    onClick={() => downloadEventCompletionWordReport(activeEvent, registeredStudents, scores, activeOccasion?.title || 'Fresherism 2026', activeOccasion?.reportFormatUrl)}
-                    className="w-full sm:w-auto px-6 py-3 bg-gradient-to-r from-cyan-400 to-blue-500 text-black font-black text-xs uppercase tracking-wider rounded-xl shadow-xl transition-all cursor-pointer flex items-center justify-center gap-2"
+                    onClick={() => handleDownloadReport(activeEvent)}
+                    disabled={reportGeneratingStatus.loading}
+                    className="w-full sm:w-auto px-6 py-3 bg-gradient-to-r from-cyan-400 to-blue-500 hover:from-cyan-300 hover:to-blue-400 text-black font-black text-xs uppercase tracking-wider rounded-xl shadow-xl transition-all cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50"
                   >
-                    <Download className="w-4 h-4 text-black" />
-                    <span>Generate Report (.docx)</span>
+                    {reportGeneratingStatus.loading ? (
+                      <Loader2 className="w-4 h-4 text-black animate-spin" />
+                    ) : (
+                      <Download className="w-4 h-4 text-black" />
+                    )}
+                    <span>{reportGeneratingStatus.loading ? 'Generating Report...' : 'Generate Report (.docx)'}</span>
                   </button>
                 ) : (
                   <button
@@ -3632,18 +4013,32 @@ export default function CoordinatorDashboard({
             </div>
 
             <form onSubmit={handleOnTheSpotRegister} className="space-y-4 text-xs">
-              <div>
-                <label className="text-[10px] font-black text-zinc-300 uppercase block mb-1">
-                  Register Number *
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. 24BCSE102"
-                  value={newRegNo}
-                  onChange={(e) => setNewRegNo(e.target.value)}
-                  className="w-full bg-[#0F011E] border border-white/20 focus:border-emerald-400 text-white font-mono font-bold rounded-xl px-3.5 py-2.5 focus:outline-none"
-                />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[10px] font-black text-zinc-300 uppercase block mb-1">
+                    Register Number *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. 24BCSE102"
+                    value={newRegNo}
+                    onChange={(e) => setNewRegNo(e.target.value)}
+                    className="w-full bg-[#0F011E] border border-white/20 focus:border-emerald-400 text-white font-mono font-bold rounded-xl px-3.5 py-2.5 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-black text-cyan-300 uppercase block mb-1">
+                    USN NO (Permanent / Correct USN)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. 24BCSE102"
+                    value={newUsnNo}
+                    onChange={(e) => setNewUsnNo(e.target.value)}
+                    className="w-full bg-[#0F011E] border border-white/20 focus:border-cyan-400 text-cyan-300 font-mono font-bold rounded-xl px-3.5 py-2.5 focus:outline-none uppercase"
+                  />
+                </div>
               </div>
 
               <div>
@@ -3774,17 +4169,31 @@ export default function CoordinatorDashboard({
             </div>
 
             <form onSubmit={handleSaveStudentEdit} className="space-y-4 text-xs">
-              <div>
-                <label className="text-[10px] font-black text-zinc-300 uppercase block mb-1">
-                  Student Register Number *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={editStudentRegNo}
-                  onChange={(e) => setEditStudentRegNo(e.target.value)}
-                  className="w-full bg-[#0F011E] border border-white/20 focus:border-cyan-400 text-white font-mono font-bold rounded-xl px-3.5 py-2.5 focus:outline-none"
-                />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[10px] font-black text-zinc-300 uppercase block mb-1">
+                    Register Number *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={editStudentRegNo}
+                    onChange={(e) => setEditStudentRegNo(e.target.value)}
+                    className="w-full bg-[#0F011E] border border-white/20 focus:border-cyan-400 text-white font-mono font-bold rounded-xl px-3.5 py-2.5 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-black text-cyan-300 uppercase block mb-1">
+                    USN NO (Correct USN)
+                  </label>
+                  <input
+                    type="text"
+                    value={editStudentUsnNo}
+                    onChange={(e) => setEditStudentUsnNo(e.target.value)}
+                    placeholder="e.g. 24BCAR105"
+                    className="w-full bg-[#0F011E] border border-white/20 focus:border-cyan-400 text-cyan-300 font-mono font-bold rounded-xl px-3.5 py-2.5 focus:outline-none uppercase"
+                  />
+                </div>
               </div>
 
               <div>
@@ -3853,6 +4262,34 @@ export default function CoordinatorDashboard({
           occasionTitle={activeOccasion?.title || 'Fresherism 2K26'}
           onClose={() => setShowOfficialScoreSheetModal(false)}
         />
+      )}
+
+
+      {/* Floating Global Report Generation Notification / Toast */}
+      {reportGeneratingStatus.message && (
+        <div className="fixed bottom-6 right-6 z-50 max-w-md bg-gradient-to-r from-cyan-950/95 via-blue-950/95 to-black/95 border-2 border-cyan-400/70 text-white p-4 rounded-2xl shadow-2xl backdrop-blur-md animate-in slide-in-from-bottom-5 duration-300 flex items-center gap-3">
+          {reportGeneratingStatus.loading ? (
+            <div className="p-2 rounded-xl bg-cyan-500/20 text-cyan-300 shrink-0">
+              <Loader2 className="w-5 h-5 animate-spin text-cyan-400" />
+            </div>
+          ) : (
+            <div className="p-2 rounded-xl bg-emerald-500/20 text-emerald-300 shrink-0">
+              <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+            </div>
+          )}
+          <div className="flex-1 text-xs font-bold leading-snug">
+            {reportGeneratingStatus.message}
+          </div>
+          {!reportGeneratingStatus.loading && (
+            <button
+              type="button"
+              onClick={() => setReportGeneratingStatus({ loading: false, message: '' })}
+              className="p-1 text-zinc-400 hover:text-white cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
       )}
 
     </div>

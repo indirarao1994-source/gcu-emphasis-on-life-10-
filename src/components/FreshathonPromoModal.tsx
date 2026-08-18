@@ -8,7 +8,8 @@ interface FreshathonPromoModalProps {
   activeStudent: Student | null;
   isLandingPage: boolean;
   events: Event[];
-  onRegisterForEvent: (eventId: string) => void;
+  onRegisterForEvent: (eventId: string, tShirtSize?: string) => void;
+  onUpdateStudentProfile?: (student: Student) => void;
   onRequireSignIn: (eventId?: string) => void;
 }
 
@@ -19,11 +20,25 @@ export const FreshathonPromoModal: React.FC<FreshathonPromoModalProps> = ({
   isLandingPage,
   events,
   onRegisterForEvent,
+  onUpdateStudentProfile,
   onRequireSignIn
 }) => {
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [registrationSuccess, setRegistrationSuccess] = useState(false);
   const [showLoginNotice, setShowLoginNotice] = useState(false);
+
+  // T-Shirt Size State (S, M, L, XL, XXL, XXXL)
+  const [selectedTShirtSize, setSelectedTShirtSize] = useState<string>(
+    activeStudent?.tShirtSize || 'M'
+  );
+  const [isEditingTShirt, setIsEditingTShirt] = useState(false);
+  const [tShirtSuccessMsg, setTShirtSuccessMsg] = useState('');
+
+  useEffect(() => {
+    if (activeStudent?.tShirtSize) {
+      setSelectedTShirtSize(activeStudent.tShirtSize);
+    }
+  }, [activeStudent]);
 
   // Find Freshathon event or fallback
   const freshathonEvent = events.find(e => 
@@ -70,9 +85,23 @@ export const FreshathonPromoModal: React.FC<FreshathonPromoModalProps> = ({
       return;
     }
 
-    // Register student for Freshathon
-    onRegisterForEvent(freshathonEvent.id);
+    // Register student for Freshathon with T-Shirt size
+    onRegisterForEvent(freshathonEvent.id, selectedTShirtSize);
     setRegistrationSuccess(true);
+  };
+
+  const handleSaveUpdatedTShirt = () => {
+    if (!activeStudent) return;
+    const updatedStudent: Student = {
+      ...activeStudent,
+      tShirtSize: selectedTShirtSize
+    };
+    if (onUpdateStudentProfile) {
+      onUpdateStudentProfile(updatedStudent);
+    }
+    setIsEditingTShirt(false);
+    setTShirtSuccessMsg(`✅ Updated T-Shirt Size to ${selectedTShirtSize}!`);
+    setTimeout(() => setTShirtSuccessMsg(''), 4000);
   };
 
   if (!isOpen) return null;
@@ -90,9 +119,9 @@ export const FreshathonPromoModal: React.FC<FreshathonPromoModalProps> = ({
         onMouseLeave={handleMouseLeave}
         style={{ perspective: '1200px' }}
       >
-        {/* Glowing 3D Card */}
+        {/* Glowing 3D Card with controlled max-height and scrolling */}
         <div 
-          className="relative overflow-hidden rounded-3xl bg-gradient-to-b from-[#1E0438] via-[#120224] to-[#0A0014] border-2 border-amber-400/80 shadow-[0_0_50px_rgba(245,158,11,0.35)] p-6 sm:p-8 text-white transition-all duration-300"
+          className="relative max-h-[85vh] overflow-y-auto rounded-3xl bg-gradient-to-b from-[#1E0438] via-[#120224] to-[#0A0014] border-2 border-amber-400/80 shadow-[0_0_50px_rgba(245,158,11,0.35)] p-5 sm:p-7 text-white transition-all duration-300"
           style={{
             transform: `rotateX(${tiltX}deg) rotateY(${tiltY}deg) translateZ(20px)`,
             transformStyle: 'preserve-3d'
@@ -103,14 +132,17 @@ export const FreshathonPromoModal: React.FC<FreshathonPromoModalProps> = ({
           <div className="absolute -bottom-24 -left-24 w-60 h-60 bg-emerald-500/25 rounded-full blur-3xl pointer-events-none animate-pulse" />
           <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-80 h-80 bg-rose-600/15 rounded-full blur-3xl pointer-events-none" />
 
-          {/* Close Button */}
-          <button 
-            onClick={onClose}
-            className="absolute top-4 right-4 p-2 rounded-full bg-white/10 hover:bg-white/20 text-white/80 hover:text-white transition-all cursor-pointer z-10 border border-white/20"
-            title="Dismiss"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          {/* Sticky Close Button (Always visible at top-right) */}
+          <div className="sticky top-0 z-50 flex justify-end -mt-1 -mr-1 mb-2 pointer-events-auto">
+            <button 
+              onClick={onClose}
+              className="p-2 rounded-full bg-rose-600/90 hover:bg-rose-500 text-white font-bold transition-all cursor-pointer shadow-lg border border-white/40 flex items-center justify-center gap-1 text-xs"
+              title="Close Modal"
+            >
+              <X className="w-4 h-4" />
+              <span className="text-[10px] uppercase font-black pr-1">Close</span>
+            </button>
+          </div>
 
           {/* Top Blinking Badge */}
           <div className="flex justify-center mb-4">
@@ -157,7 +189,7 @@ export const FreshathonPromoModal: React.FC<FreshathonPromoModalProps> = ({
           </div>
 
           {/* Event Quick Details Card */}
-          <div className="my-5 p-3.5 rounded-2xl bg-white/5 border border-amber-400/30 backdrop-blur-md space-y-2 text-xs" style={{ transform: 'translateZ(30px)' }}>
+          <div className="my-4 p-3.5 rounded-2xl bg-white/5 border border-amber-400/30 backdrop-blur-md space-y-2 text-xs" style={{ transform: 'translateZ(30px)' }}>
             <div className="flex items-center justify-between border-b border-white/10 pb-2">
               <span className="flex items-center gap-1.5 text-zinc-300 font-medium">
                 <Calendar className="w-3.5 h-3.5 text-amber-400" /> Date
@@ -168,7 +200,7 @@ export const FreshathonPromoModal: React.FC<FreshathonPromoModalProps> = ({
               <span className="flex items-center gap-1.5 text-zinc-300 font-medium">
                 <MapPin className="w-3.5 h-3.5 text-emerald-400" /> Venue & Time
               </span>
-              <span className="font-bold text-white">06:30 AM • GCU Main Track Ground</span>
+              <span className="font-bold text-white">06:30 AM • GCU Students Knowledge Park (Hoskote)</span>
             </div>
             <div className="flex items-center justify-between">
               <span className="flex items-center gap-1.5 text-zinc-300 font-medium">
@@ -180,7 +212,75 @@ export const FreshathonPromoModal: React.FC<FreshathonPromoModalProps> = ({
             </div>
           </div>
 
+          {/* T-SHIRT SIZE SELECTION & EDITING SECTION */}
+          <div className="my-4 p-4 rounded-2xl bg-[#0F011E] border-2 border-amber-400/60 shadow-xl space-y-2 text-left" style={{ transform: 'translateZ(35px)' }}>
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-black uppercase text-amber-300 flex items-center gap-1.5">
+                <span>👕 Official Marathon T-Shirt Size</span>
+              </label>
+              {isAlreadyRegistered && !isEditingTShirt && (
+                <button
+                  type="button"
+                  onClick={() => setIsEditingTShirt(true)}
+                  className="px-2.5 py-1 bg-amber-400/20 hover:bg-amber-400/40 border border-amber-400 text-amber-300 rounded-lg text-[10px] font-black uppercase transition-all cursor-pointer"
+                >
+                  Edit Size
+                </button>
+              )}
+            </div>
+
+            {(!isAlreadyRegistered || isEditingTShirt) ? (
+              <div className="space-y-2">
+                <select
+                  value={selectedTShirtSize}
+                  onChange={(e) => setSelectedTShirtSize(e.target.value)}
+                  className="w-full bg-[#1A032E] border-2 border-amber-400/60 text-white rounded-xl px-3.5 py-2 text-xs font-bold focus:outline-none focus:border-amber-400"
+                >
+                  <option value="S">Small (S)</option>
+                  <option value="M">Medium (M)</option>
+                  <option value="L">Large (L)</option>
+                  <option value="XL">Extra Large (XL)</option>
+                  <option value="XXL">Double Extra Large (XXL)</option>
+                  <option value="XXXL">Triple Extra Large (XXXL)</option>
+                </select>
+
+                {isAlreadyRegistered && isEditingTShirt && (
+                  <div className="flex justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setIsEditingTShirt(false)}
+                      className="px-3 py-1 bg-zinc-800 text-zinc-300 font-bold rounded-lg text-xs"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSaveUpdatedTShirt}
+                      className="px-4 py-1 bg-amber-400 text-black font-black uppercase rounded-lg text-xs hover:bg-amber-300 shadow-md cursor-pointer"
+                    >
+                      Save Size
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="flex items-center justify-between bg-black/40 p-2.5 rounded-xl border border-white/10">
+                <span className="text-zinc-300 font-medium text-xs">Selected Size:</span>
+                <span className="px-3 py-0.5 bg-amber-400 text-black font-black rounded-lg text-xs uppercase shadow">
+                  {activeStudent?.tShirtSize || selectedTShirtSize || 'M'}
+                </span>
+              </div>
+            )}
+          </div>
+
           {/* Feedback Notices */}
+          {tShirtSuccessMsg && (
+            <div className="mb-3 p-3 rounded-xl bg-emerald-950/90 border border-emerald-400 text-emerald-200 text-xs font-bold flex items-center gap-2 animate-fadeIn">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span>{tShirtSuccessMsg}</span>
+            </div>
+          )}
+
           {showLoginNotice && (
             <div className="mb-4 p-3 rounded-xl bg-rose-950/90 border-2 border-rose-500 text-rose-200 text-xs font-bold flex items-center gap-2 animate-headShake">
               <Lock className="w-5 h-5 text-rose-400 shrink-0" />
@@ -199,7 +299,7 @@ export const FreshathonPromoModal: React.FC<FreshathonPromoModalProps> = ({
               <div>
                 <p className="uppercase text-[11px] font-black text-emerald-300">Registration Confirmed!</p>
                 <p className="font-medium text-[11px] text-zinc-200">
-                  You are registered for Freshathon! Prepare your running shoes for Aug 15th!
+                  You are registered for Freshathon (T-Shirt Size: <strong>{selectedTShirtSize}</strong>)! Prepare your running shoes for Aug 15th!
                 </p>
               </div>
             </div>
@@ -210,7 +310,7 @@ export const FreshathonPromoModal: React.FC<FreshathonPromoModalProps> = ({
             {isAlreadyRegistered ? (
               <div className="w-full py-3.5 px-4 rounded-xl bg-emerald-600/30 border-2 border-emerald-400 text-emerald-300 font-black text-xs sm:text-sm uppercase tracking-wider text-center flex items-center justify-center gap-2 shadow-lg">
                 <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-                <span>YOU ARE REGISTERED FOR FRESHATHON (100 PTS)</span>
+                <span>YOU ARE REGISTERED FOR FRESHATHON (SIZE: {activeStudent?.tShirtSize || selectedTShirtSize})</span>
               </div>
             ) : (
               <button
